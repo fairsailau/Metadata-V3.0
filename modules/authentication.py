@@ -47,7 +47,7 @@ def oauth2_authentication():
         
         client_id = st.text_input("Client ID", type="password")
         client_secret = st.text_input("Client Secret", type="password")
-        redirect_uri = st.text_input("Redirect URI", value="http://localhost:8501/")
+        redirect_uri = st.text_input("Redirect URI", value="http://localhost:8501/") 
         
         submitted = st.form_submit_button("Authenticate")
         
@@ -62,6 +62,12 @@ def oauth2_authentication():
                         client_secret=client_secret,
                         store_tokens=store_tokens,
                     )
+                    
+                    # Store credentials for re-authentication
+                    if "auth_credentials" not in st.session_state:
+                        st.session_state.auth_credentials = {}
+                    st.session_state.auth_credentials["client_id"] = client_id
+                    st.session_state.auth_credentials["client_secret"] = client_secret
                     
                     # Get authorization URL
                     auth_url, csrf_token = oauth.get_authorization_url(redirect_uri)
@@ -172,6 +178,11 @@ def jwt_authentication():
                 st.session_state.client = client
                 st.session_state.user = service_account
                 
+                # Store JWT config for re-authentication
+                if "auth_credentials" not in st.session_state:
+                    st.session_state.auth_credentials = {}
+                st.session_state.auth_credentials["jwt_config"] = config_json
+                
                 st.success(f"Successfully authenticated as {service_account.name} (Service Account)!")
                 st.rerun()
             
@@ -203,7 +214,15 @@ def developer_token_authentication():
                         client_id=client_id,
                         client_secret=client_secret,
                         access_token=developer_token,
+                        store_tokens=store_tokens  # Added store_tokens parameter
                     )
+                    
+                    # Store credentials for re-authentication
+                    if "auth_credentials" not in st.session_state:
+                        st.session_state.auth_credentials = {}
+                    st.session_state.auth_credentials["client_id"] = client_id
+                    st.session_state.auth_credentials["client_secret"] = client_secret
+                    st.session_state.auth_credentials["access_token"] = developer_token
                     
                     # Create client
                     client = Client(auth)
@@ -224,19 +243,30 @@ def developer_token_authentication():
 
 def store_tokens(access_token, refresh_token=None):
     """
-    Store tokens in session state
+    Store tokens in session state and return them as required by Box SDK
     """
+    # Store in session state
     st.session_state.access_token = access_token
     if refresh_token:
         st.session_state.refresh_token = refresh_token
-    return None
+    
+    # Store in auth_credentials for re-authentication
+    if "auth_credentials" not in st.session_state:
+        st.session_state.auth_credentials = {}
+    
+    st.session_state.auth_credentials["access_token"] = access_token
+    if refresh_token:
+        st.session_state.auth_credentials["refresh_token"] = refresh_token
+    
+    # Must return tokens for Box SDK
+    return access_token, refresh_token
 
 # Instructions for creating a Box app
 with st.expander("How to create a Box app and get credentials"):
     st.write("""
     ### Creating a Box App
     
-    1. Go to the [Box Developer Console](https://app.box.com/developers/console)
+    1. Go to the [Box Developer Console](https://app.box.com/developers/console) 
     2. Click on "Create New App"
     3. Select "Custom App" and click "Next"
     4. Select "Standard OAuth 2.0" or "Server Authentication (with JWT)" and click "Next"
@@ -250,7 +280,7 @@ with st.expander("How to create a Box app and get credentials"):
     7. Save changes
     8. Note your "Client ID" and "Client Secret" for use in this app
     
-    ### Getting a Developer Token (for testing)
+    ### Getting a Developer Token (for testing) 
     
     1. In your app configuration, click on "Developer Token"
     2. Generate a developer token
