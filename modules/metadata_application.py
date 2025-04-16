@@ -6,6 +6,7 @@ import concurrent.futures
 from typing import Dict, List, Any
 import json
 import logging
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -23,27 +24,22 @@ def apply_metadata():
         st.error("Please authenticate with Box first")
         return
     
-    # Ensure extraction_results is initialized - FIXED: Use hasattr check instead of 'in' operator
+    # Ensure extraction_results is initialized
     if not hasattr(st.session_state, "extraction_results"):
         st.session_state.extraction_results = {}
         logger.info("Initialized extraction_results in apply_metadata")
     
-    # Ensure selected_result_ids is initialized - FIXED: Use hasattr check instead of 'in' operator
+    # Ensure selected_result_ids is initialized
     if not hasattr(st.session_state, "selected_result_ids"):
-        # Initialize with empty list first to avoid KeyError
         st.session_state.selected_result_ids = []
-        # Then populate with extraction_results keys if available
-        if hasattr(st.session_state, "extraction_results") and st.session_state.extraction_results:
-            # FIXED: Ensure we're using the correct keys from extraction_results
-            st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
-        logger.info(f"Initialized selected_result_ids in apply_metadata with {len(st.session_state.selected_result_ids)} items")
+        logger.info("Initialized selected_result_ids in apply_metadata")
     
     # Ensure application_state is initialized
     if not hasattr(st.session_state, "application_state"):
         st.session_state.application_state = {
             "is_applying": False,
             "applied_files": 0,
-            "total_files": len(st.session_state.selected_result_ids) if hasattr(st.session_state, "selected_result_ids") else 0,
+            "total_files": 0,
             "current_batch": [],
             "results": {},
             "errors": {}
@@ -70,30 +66,42 @@ def apply_metadata():
             st.rerun()
         return
     
-    # FIXED: Debug logging to help diagnose issues
-    logger.info(f"extraction_results keys: {list(st.session_state.extraction_results.keys())}")
-    logger.info(f"selected_result_ids: {st.session_state.selected_result_ids}")
+    # FIXED: Extract file IDs from composite keys in extraction_results
+    # The composite key format is "file_id_extraction_method"
+    available_file_ids = []
+    file_id_to_composite_key = {}
     
-    # FIXED: If no results are explicitly selected, use all available results from extraction_results
-    if not hasattr(st.session_state, "selected_result_ids") or not st.session_state.selected_result_ids:
-        logger.info("No results explicitly selected, using all available results")
-        st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
-        st.info("No results explicitly selected, using all available results")
+    for composite_key in st.session_state.extraction_results.keys():
+        # Extract file_id from composite key (format: file_id_extraction_method)
+        match = re.match(r'([^_]+)_', composite_key)
+        if match:
+            file_id = match.group(1)
+            available_file_ids.append(file_id)
+            file_id_to_composite_key[file_id] = composite_key
+            logger.info(f"Extracted file_id {file_id} from composite key {composite_key}")
+    
+    # Remove duplicates while preserving order
+    available_file_ids = list(dict.fromkeys(available_file_ids))
+    
+    # Debug logging
+    logger.info(f"Available file IDs extracted from composite keys: {available_file_ids}")
+    logger.info(f"File ID to composite key mapping: {file_id_to_composite_key}")
     
     st.write("Apply extracted metadata to your Box files.")
     
-    # Update total files count in case selected_result_ids has changed
+    # Update total files count based on available_file_ids
     if hasattr(st.session_state, "application_state"):
-        st.session_state.application_state["total_files"] = len(st.session_state.selected_result_ids)
+        st.session_state.application_state["total_files"] = len(available_file_ids)
     
     # Display selected files
     st.subheader("Selected Files")
-    st.write(f"You have selected {len(st.session_state.selected_result_ids)} files for metadata application.")
+    st.write(f"You have selected {len(available_file_ids)} files for metadata application.")
     
     with st.expander("View Selected Files"):
-        for file_id in st.session_state.selected_result_ids:
-            if file_id in st.session_state.extraction_results:
-                result = st.session_state.extraction_results[file_id]
+        for file_id in available_file_ids:
+            composite_key = file_id_to_composite_key.get(file_id)
+            if composite_key and composite_key in st.session_state.extraction_results:
+                result = st.session_state.extraction_results[composite_key]
                 st.write(f"- {result.get('file_name', 'Unknown')} ({file_id})")
     
     # Metadata application options
@@ -182,14 +190,11 @@ def apply_metadata():
     # Apply metadata to a single file using Box's recommended approach
     def apply_metadata_to_file(file_id):
         try:
-            # FIXED: Ensure extraction_results exists before accessing it
-            if not hasattr(st.session_state, "extraction_results"):
-                st.session_state.extraction_results = {}
-                logger.info("Initialized extraction_results in apply_metadata_to_file")
-                
-            # Validate file_id exists in extraction_results
-            if file_id not in st.session_state.extraction_results:
-                logger.warning(f"File ID {file_id} not found in extraction_results")
+            # Get the composite key for this file_id
+            composite_key = file_id_to_composite_key.get(file_id)
+            
+            if not composite_key or composite_key not in st.session_state.extraction_results:
+                logger.warning(f"Composite key for file ID {file_id} not found in extraction_results")
                 return {
                     "file_id": file_id,
                     "file_name": "Unknown",
@@ -197,7 +202,7 @@ def apply_metadata():
                     "error": "File ID not found in extraction results"
                 }
                 
-            result_data = st.session_state.extraction_results[file_id]
+            result_data = st.session_state.extraction_results[composite_key]
             file_name = result_data.get("file_name", "Unknown")
             
             # Get Box client
@@ -210,7 +215,7 @@ def apply_metadata():
             logger.info(f"Applying metadata for file: {file_name} ({file_id})")
             logger.info(f"Result data structure: {json.dumps(result_data, default=str)}")
             
-            # FIXED: Check if result_data contains a nested 'result' field (from processing.py)
+            # Check if result_data contains a nested 'result' field (from processing.py)
             if "result" in result_data and result_data["result"]:
                 result_content = result_data["result"]
                 logger.info(f"Found result field in result_data: {json.dumps(result_content, default=str)}")
@@ -346,51 +351,22 @@ def apply_metadata():
             logger.exception(f"Unexpected error applying metadata to file {file_id}: {str(e)}")
             return {
                 "file_id": file_id,
-                "file_name": st.session_state.extraction_results.get(file_id, {}).get("file_name", "Unknown") if hasattr(st.session_state, "extraction_results") else "Unknown",
+                "file_name": "Unknown",
                 "success": False,
                 "error": f"Unexpected error: {str(e)}"
             }
     
     # Apply metadata with batch processing
     def apply_metadata_batch():
-        # FIXED: Ensure session state variables exist before accessing them
-        if not hasattr(st.session_state, "extraction_results"):
-            st.session_state.extraction_results = {}
-            logger.info("Initialized extraction_results in apply_metadata_batch")
-            
-        if not hasattr(st.session_state, "selected_result_ids"):
-            st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
-            logger.info(f"Initialized selected_result_ids in apply_metadata_batch with {len(st.session_state.selected_result_ids)} items")
-        
-        # FIXED: Debug logging to help diagnose issues
-        logger.info(f"Starting apply_metadata_batch with selected_result_ids: {st.session_state.selected_result_ids}")
-        logger.info(f"extraction_results keys: {list(st.session_state.extraction_results.keys())}")
-        
-        # Validate selected_result_ids
-        valid_file_ids = []
-        for file_id in st.session_state.selected_result_ids:
-            if file_id in st.session_state.extraction_results:
-                valid_file_ids.append(file_id)
-                logger.info(f"Valid file ID found: {file_id}")
-            else:
-                logger.warning(f"File ID {file_id} not found in extraction_results, skipping")
-        
-        # FIXED: If no valid file IDs, try to get them directly from extraction_results
-        if not valid_file_ids and hasattr(st.session_state, "extraction_results") and st.session_state.extraction_results:
-            logger.info("No valid file IDs found in selected_result_ids, trying to get them from extraction_results")
-            valid_file_ids = list(st.session_state.extraction_results.keys())
-            # Update selected_result_ids for future use
-            st.session_state.selected_result_ids = valid_file_ids
-            logger.info(f"Got {len(valid_file_ids)} file IDs directly from extraction_results")
-                
-        if not valid_file_ids:
-            logger.error("No valid file IDs found in selected_result_ids or extraction_results")
+        # Validate available_file_ids
+        if not available_file_ids:
+            logger.error("No file IDs available for metadata application")
             if hasattr(st.session_state, "application_state"):
                 st.session_state.application_state["is_applying"] = False
-            st.error("No valid files selected for metadata application")
+            st.error("No files available for metadata application")
             return
             
-        total_files = len(valid_file_ids)
+        total_files = len(available_file_ids)
         logger.info(f"Starting metadata application for {total_files} files")
         
         # Reset application state
@@ -415,14 +391,15 @@ def apply_metadata():
             
             # Get current batch
             batch_end = min(i + batch_size, total_files)
-            current_batch = valid_file_ids[i:batch_end]
+            current_batch = available_file_ids[i:batch_end]
             
             # Update current batch in state
             st.session_state.application_state["current_batch"] = []
             for file_id in current_batch:
-                if file_id in st.session_state.extraction_results:
+                composite_key = file_id_to_composite_key.get(file_id)
+                if composite_key and composite_key in st.session_state.extraction_results:
                     st.session_state.application_state["current_batch"].append(
-                        st.session_state.extraction_results[file_id].get("file_name", "Unknown")
+                        st.session_state.extraction_results[composite_key].get("file_name", "Unknown")
                     )
             
             # Process batch in parallel
@@ -461,8 +438,9 @@ def apply_metadata():
                     
                     except Exception as e:
                         # Handle unexpected errors
-                        if hasattr(st.session_state, "extraction_results"):
-                            file_name = st.session_state.extraction_results.get(file_id, {}).get("file_name", "Unknown")
+                        composite_key = file_id_to_composite_key.get(file_id)
+                        if composite_key and composite_key in st.session_state.extraction_results:
+                            file_name = st.session_state.extraction_results[composite_key].get("file_name", "Unknown")
                         else:
                             file_name = "Unknown"
                             
@@ -531,7 +509,7 @@ def apply_metadata():
                 st.session_state.application_state = {
                     "is_applying": False,
                     "applied_files": 0,
-                    "total_files": len(st.session_state.selected_result_ids) if hasattr(st.session_state, "selected_result_ids") else 0,
+                    "total_files": len(available_file_ids),
                     "current_batch": [],
                     "results": {},
                     "errors": {}
