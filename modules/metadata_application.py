@@ -19,7 +19,7 @@ def apply_metadata():
     st.title("Apply Metadata")
     
     # Validate session state
-    if not st.session_state.authenticated or not st.session_state.client:
+    if not hasattr(st.session_state, "authenticated") or not hasattr(st.session_state, "client") or not st.session_state.authenticated or not st.session_state.client:
         st.error("Please authenticate with Box first")
         return
     
@@ -34,6 +34,7 @@ def apply_metadata():
         st.session_state.selected_result_ids = []
         # Then populate with extraction_results keys if available
         if hasattr(st.session_state, "extraction_results") and st.session_state.extraction_results:
+            # FIXED: Ensure we're using the correct keys from extraction_results
             st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
         logger.info(f"Initialized selected_result_ids in apply_metadata with {len(st.session_state.selected_result_ids)} items")
     
@@ -69,7 +70,11 @@ def apply_metadata():
             st.rerun()
         return
     
-    # If no results are explicitly selected, use all available results
+    # FIXED: Debug logging to help diagnose issues
+    logger.info(f"extraction_results keys: {list(st.session_state.extraction_results.keys())}")
+    logger.info(f"selected_result_ids: {st.session_state.selected_result_ids}")
+    
+    # FIXED: If no results are explicitly selected, use all available results from extraction_results
     if not hasattr(st.session_state, "selected_result_ids") or not st.session_state.selected_result_ids:
         logger.info("No results explicitly selected, using all available results")
         st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
@@ -205,69 +210,65 @@ def apply_metadata():
             logger.info(f"Applying metadata for file: {file_name} ({file_id})")
             logger.info(f"Result data structure: {json.dumps(result_data, default=str)}")
             
-            # Try multiple approaches to extract metadata values
-            
-            # 1. Check for result_data field (preferred format)
-            if "result_data" in result_data and result_data["result_data"]:
-                if isinstance(result_data["result_data"], dict):
-                    # Extract all fields from the result_data that aren't internal fields
-                    for key, value in result_data["result_data"].items():
+            # FIXED: Check if result_data contains a nested 'result' field (from processing.py)
+            if "result" in result_data and result_data["result"]:
+                result_content = result_data["result"]
+                logger.info(f"Found result field in result_data: {json.dumps(result_content, default=str)}")
+                
+                if isinstance(result_content, dict):
+                    # Extract all fields from the result that aren't internal fields
+                    for key, value in result_content.items():
                         if not key.startswith("_"):
                             metadata_values[key] = value
-                    logger.info(f"Extracted metadata from result_data: {len(metadata_values)} fields")
-                elif isinstance(result_data["result_data"], str):
-                    # If result_data is a string, use it as a single metadata value
-                    metadata_values["extracted_text"] = result_data["result_data"]
-                    logger.info("Extracted metadata from result_data string")
-            
-            # 2. Check for result field (backward compatibility)
-            if not metadata_values and "result" in result_data:
-                if isinstance(result_data["result"], dict):
-                    # Extract all fields from the result that aren't internal fields
-                    for key, value in result_data["result"].items():
-                        if not key.startswith("_") and key != "extracted_text":
-                            metadata_values[key] = value
-                    logger.info(f"Extracted metadata from result: {len(metadata_values)} fields")
-                    
-                    # Check for key_value_pairs in result
-                    if not metadata_values and "key_value_pairs" in result_data["result"]:
-                        kv_pairs = result_data["result"]["key_value_pairs"]
-                        if isinstance(kv_pairs, dict):
-                            metadata_values = kv_pairs
-                            logger.info(f"Extracted metadata from key_value_pairs: {len(metadata_values)} fields")
-                elif isinstance(result_data["result"], str):
+                    logger.info(f"Extracted metadata from result field: {len(metadata_values)} fields")
+                elif isinstance(result_content, str):
                     # If result is a string, use it as a single metadata value
-                    metadata_values["extracted_text"] = result_data["result"]
+                    metadata_values["extracted_text"] = result_content
                     logger.info("Extracted metadata from result string")
             
-            # 3. Check for api_response field
-            if not metadata_values and "api_response" in result_data:
-                api_response = result_data["api_response"]
-                if isinstance(api_response, dict) and "answer" in api_response:
-                    if isinstance(api_response["answer"], dict):
-                        # Use answer field directly
-                        for key, value in api_response["answer"].items():
-                            metadata_values[key] = value
-                        logger.info(f"Extracted metadata from api_response.answer: {len(metadata_values)} fields")
-                    elif isinstance(api_response["answer"], str):
-                        # Try to parse answer as JSON
-                        try:
-                            answer_data = json.loads(api_response["answer"])
-                            if isinstance(answer_data, dict):
-                                for key, value in answer_data.items():
-                                    metadata_values[key] = value
-                                logger.info(f"Extracted metadata from parsed api_response.answer: {len(metadata_values)} fields")
-                        except json.JSONDecodeError:
-                            # Use as a single metadata value
-                            metadata_values["answer"] = api_response["answer"]
-                            logger.info("Extracted metadata from api_response.answer string")
-            
-            # 4. Try to extract from any string field in the result_data
+            # Try multiple approaches to extract metadata values if we didn't get any from the result field
             if not metadata_values:
-                for key, value in result_data.items():
-                    if isinstance(value, str) and not key.startswith("_") and key not in ["file_name", "file_id"]:
-                        metadata_values[key] = value
-                logger.info(f"Extracted metadata from string fields: {len(metadata_values)} fields")
+                # 1. Check for result_data field (preferred format)
+                if "result_data" in result_data and result_data["result_data"]:
+                    if isinstance(result_data["result_data"], dict):
+                        # Extract all fields from the result_data that aren't internal fields
+                        for key, value in result_data["result_data"].items():
+                            if not key.startswith("_"):
+                                metadata_values[key] = value
+                        logger.info(f"Extracted metadata from result_data: {len(metadata_values)} fields")
+                    elif isinstance(result_data["result_data"], str):
+                        # If result_data is a string, use it as a single metadata value
+                        metadata_values["extracted_text"] = result_data["result_data"]
+                        logger.info("Extracted metadata from result_data string")
+                
+                # 2. Check for api_response field
+                if not metadata_values and "api_response" in result_data:
+                    api_response = result_data["api_response"]
+                    if isinstance(api_response, dict) and "answer" in api_response:
+                        if isinstance(api_response["answer"], dict):
+                            # Use answer field directly
+                            for key, value in api_response["answer"].items():
+                                metadata_values[key] = value
+                            logger.info(f"Extracted metadata from api_response.answer: {len(metadata_values)} fields")
+                        elif isinstance(api_response["answer"], str):
+                            # Try to parse answer as JSON
+                            try:
+                                answer_data = json.loads(api_response["answer"])
+                                if isinstance(answer_data, dict):
+                                    for key, value in answer_data.items():
+                                        metadata_values[key] = value
+                                    logger.info(f"Extracted metadata from parsed api_response.answer: {len(metadata_values)} fields")
+                            except json.JSONDecodeError:
+                                # Use as a single metadata value
+                                metadata_values["answer"] = api_response["answer"]
+                                logger.info("Extracted metadata from api_response.answer string")
+                
+                # 3. Try to extract from any string field in the result_data
+                if not metadata_values:
+                    for key, value in result_data.items():
+                        if isinstance(value, str) and not key.startswith("_") and key not in ["file_name", "file_id"]:
+                            metadata_values[key] = value
+                    logger.info(f"Extracted metadata from string fields: {len(metadata_values)} fields")
             
             # If no metadata values, log warning and return
             if not metadata_values:
@@ -361,16 +362,29 @@ def apply_metadata():
             st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
             logger.info(f"Initialized selected_result_ids in apply_metadata_batch with {len(st.session_state.selected_result_ids)} items")
         
+        # FIXED: Debug logging to help diagnose issues
+        logger.info(f"Starting apply_metadata_batch with selected_result_ids: {st.session_state.selected_result_ids}")
+        logger.info(f"extraction_results keys: {list(st.session_state.extraction_results.keys())}")
+        
         # Validate selected_result_ids
         valid_file_ids = []
         for file_id in st.session_state.selected_result_ids:
             if file_id in st.session_state.extraction_results:
                 valid_file_ids.append(file_id)
+                logger.info(f"Valid file ID found: {file_id}")
             else:
                 logger.warning(f"File ID {file_id} not found in extraction_results, skipping")
+        
+        # FIXED: If no valid file IDs, try to get them directly from extraction_results
+        if not valid_file_ids and hasattr(st.session_state, "extraction_results") and st.session_state.extraction_results:
+            logger.info("No valid file IDs found in selected_result_ids, trying to get them from extraction_results")
+            valid_file_ids = list(st.session_state.extraction_results.keys())
+            # Update selected_result_ids for future use
+            st.session_state.selected_result_ids = valid_file_ids
+            logger.info(f"Got {len(valid_file_ids)} file IDs directly from extraction_results")
                 
         if not valid_file_ids:
-            logger.error("No valid file IDs found in selected_result_ids")
+            logger.error("No valid file IDs found in selected_result_ids or extraction_results")
             if hasattr(st.session_state, "application_state"):
                 st.session_state.application_state["is_applying"] = False
             st.error("No valid files selected for metadata application")
