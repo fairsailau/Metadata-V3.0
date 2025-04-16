@@ -1,4 +1,12 @@
 import streamlit as st
+# Set page config (must be the first Streamlit command)
+st.set_page_config(
+    page_title="Box AI Metadata Extraction",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 import os
 import sys
 import logging
@@ -110,14 +118,6 @@ def initialize_session_state():
     if not hasattr(st.session_state, "feedback_data"):
         st.session_state.feedback_data = {}
         logger.info("Initialized feedback_data in session state")
-
-# Set page config (must be the first Streamlit command)
-st.set_page_config(
-    page_title="Box AI Metadata Extraction",
-    page_icon="📦",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Initialize session state
 initialize_session_state()
