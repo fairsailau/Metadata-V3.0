@@ -66,48 +66,112 @@ def apply_metadata():
             st.rerun()
         return
     
-    # FIXED: Improved method to extract file IDs from extraction_results
-    # This approach handles composite keys more robustly
+    # ENHANCED: Comprehensive approach to extract file IDs from various sources
     available_file_ids = []
     file_id_to_composite_key = {}
     file_id_to_file_name = {}
     
-    # First, check if extraction_results contains direct file_id keys from processing.py
-    # In processing.py, results are stored with file_id as the key
-    direct_file_ids = [key for key in st.session_state.extraction_results.keys() 
-                      if isinstance(key, str) and key.isdigit()]
+    # Debug the structure of extraction_results
+    logger.info(f"Extraction results keys: {list(st.session_state.extraction_results.keys())}")
+    logger.info(f"Extraction results structure: {json.dumps({str(k): str(type(v)) for k, v in st.session_state.extraction_results.items()}, indent=2)}")
     
-    if direct_file_ids:
-        # If we have direct file IDs, use them
-        logger.info(f"Found direct file IDs in extraction_results: {direct_file_ids}")
-        for file_id in direct_file_ids:
-            result = st.session_state.extraction_results[file_id]
-            available_file_ids.append(file_id)
-            file_id_to_composite_key[file_id] = file_id  # Same key
-            file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
-    else:
-        # Otherwise, try to extract file IDs from composite keys
-        logger.info("No direct file IDs found, attempting to extract from composite keys")
-        for composite_key in st.session_state.extraction_results.keys():
-            result = st.session_state.extraction_results[composite_key]
-            
-            # Try to get file_id directly from the result object first
-            if "file_id" in result and result["file_id"]:
-                file_id = result["file_id"]
+    # Check if we have any selected files in session state
+    if hasattr(st.session_state, "selected_files") and st.session_state.selected_files:
+        logger.info(f"Found {len(st.session_state.selected_files)} selected files in session state")
+        for file_info in st.session_state.selected_files:
+            if "id" in file_info and file_info["id"]:
+                file_id = file_info["id"]
+                file_name = file_info.get("name", "Unknown")
                 available_file_ids.append(file_id)
-                file_id_to_composite_key[file_id] = composite_key
+                file_id_to_file_name[file_id] = file_name
+                logger.info(f"Added file ID {file_id} from selected_files")
+    
+    # Check if we have any processing results in session state
+    if hasattr(st.session_state, "processing_state") and "results" in st.session_state.processing_state:
+        processing_results = st.session_state.processing_state["results"]
+        logger.info(f"Found {len(processing_results)} results in processing_state")
+        for file_id, result in processing_results.items():
+            if file_id not in available_file_ids:
+                available_file_ids.append(file_id)
                 file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
-                logger.info(f"Extracted file_id {file_id} from result object for key {composite_key}")
+                logger.info(f"Added file ID {file_id} from processing_state results")
+    
+    # Now check extraction_results for file IDs
+    for key, result in st.session_state.extraction_results.items():
+        # Skip if not a dictionary
+        if not isinstance(result, dict):
+            logger.warning(f"Skipping non-dictionary result for key {key}: {type(result)}")
+            continue
+            
+        # Try to get file_id directly from the result object
+        if "file_id" in result and result["file_id"]:
+            file_id = result["file_id"]
+            if file_id not in available_file_ids:
+                available_file_ids.append(file_id)
+                file_id_to_composite_key[file_id] = key
+                file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
+                logger.info(f"Added file ID {file_id} from result object for key {key}")
+        
+        # Try to extract file_id from the key if it's a string
+        elif isinstance(key, str):
+            # First check if the key itself is a file ID (all digits)
+            if key.isdigit():
+                file_id = key
+                if file_id not in available_file_ids:
+                    available_file_ids.append(file_id)
+                    file_id_to_composite_key[file_id] = key
+                    file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
+                    logger.info(f"Added file ID {file_id} (key is the file ID)")
             else:
-                # Try to extract file_id from composite key as a fallback
-                # The composite key format could be "file_id_extraction_method" or something else
-                match = re.match(r'([^_]+)_', composite_key)
+                # Try to extract file_id from composite key
+                match = re.match(r'([^_]+)_', key)
                 if match:
                     file_id = match.group(1)
+                    if file_id not in available_file_ids:
+                        available_file_ids.append(file_id)
+                        file_id_to_composite_key[file_id] = key
+                        file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
+                        logger.info(f"Added file ID {file_id} extracted from composite key {key}")
+    
+    # If we still don't have file IDs, try to extract them from the result content
+    if not available_file_ids:
+        logger.info("No file IDs found yet, trying to extract from result content")
+        for key, result in st.session_state.extraction_results.items():
+            if not isinstance(result, dict):
+                continue
+                
+            # Look for file_id in nested dictionaries
+            for k, v in result.items():
+                if k == "file_id" and v:
+                    file_id = v
+                    if file_id not in available_file_ids:
+                        available_file_ids.append(file_id)
+                        file_id_to_composite_key[file_id] = key
+                        file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
+                        logger.info(f"Added file ID {file_id} from nested dictionary for key {key}")
+                
+                # Check if there's a nested dictionary that might contain file_id
+                if isinstance(v, dict) and "file_id" in v and v["file_id"]:
+                    file_id = v["file_id"]
+                    if file_id not in available_file_ids:
+                        available_file_ids.append(file_id)
+                        file_id_to_composite_key[file_id] = key
+                        file_id_to_file_name[file_id] = result.get("file_name", v.get("file_name", "Unknown"))
+                        logger.info(f"Added file ID {file_id} from deeply nested dictionary for key {key}")
+    
+    # If we still don't have file IDs, check if there are any in processing_state
+    if not available_file_ids and hasattr(st.session_state, "processing_state"):
+        logger.info("No file IDs found yet, checking processing_state")
+        # Check current_file_index
+        if "current_file_index" in st.session_state.processing_state and st.session_state.processing_state["current_file_index"] >= 0:
+            idx = st.session_state.processing_state["current_file_index"]
+            if hasattr(st.session_state, "selected_files") and idx < len(st.session_state.selected_files):
+                file_info = st.session_state.selected_files[idx]
+                if "id" in file_info and file_info["id"]:
+                    file_id = file_info["id"]
                     available_file_ids.append(file_id)
-                    file_id_to_composite_key[file_id] = composite_key
-                    file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
-                    logger.info(f"Extracted file_id {file_id} from composite key {composite_key}")
+                    file_id_to_file_name[file_id] = file_info.get("name", "Unknown")
+                    logger.info(f"Added file ID {file_id} from current_file_index in processing_state")
     
     # Remove duplicates while preserving order
     available_file_ids = list(dict.fromkeys(available_file_ids))
@@ -117,6 +181,28 @@ def apply_metadata():
     logger.info(f"File ID to composite key mapping: {file_id_to_composite_key}")
     logger.info(f"File ID to file name mapping: {file_id_to_file_name}")
     
+    # CRITICAL: If we still don't have any file IDs, try to recover from selected_files
+    if not available_file_ids and hasattr(st.session_state, "selected_files") and st.session_state.selected_files:
+        st.warning("No file IDs found in extraction results. Using selected files as fallback.")
+        logger.warning("No file IDs found in extraction results. Using selected files as fallback.")
+        
+        for file_info in st.session_state.selected_files:
+            if "id" in file_info and file_info["id"]:
+                file_id = file_info["id"]
+                available_file_ids.append(file_id)
+                file_id_to_file_name[file_id] = file_info.get("name", "Unknown")
+                # Create a synthetic key for mapping
+                synthetic_key = f"{file_id}_fallback"
+                file_id_to_composite_key[file_id] = synthetic_key
+                # Create a synthetic result if needed
+                if synthetic_key not in st.session_state.extraction_results:
+                    st.session_state.extraction_results[synthetic_key] = {
+                        "file_id": file_id,
+                        "file_name": file_info.get("name", "Unknown"),
+                        "result": {"note": "This is a fallback entry with no extracted metadata"}
+                    }
+                logger.info(f"Added fallback file ID {file_id} from selected_files")
+    
     st.write("Apply extracted metadata to your Box files.")
     
     # Update total files count based on available_file_ids
@@ -125,6 +211,14 @@ def apply_metadata():
     
     # Display selected files
     st.subheader("Selected Files")
+    
+    if not available_file_ids:
+        st.error("No file IDs available for metadata application. Please process files first.")
+        if st.button("Go to Process Files", key="go_to_process_files_error_btn"):
+            st.session_state.current_page = "Process Files"
+            st.rerun()
+        return
+    
     st.write(f"You have selected {len(available_file_ids)} files for metadata application.")
     
     with st.expander("View Selected Files"):
@@ -221,16 +315,39 @@ def apply_metadata():
             # Get the composite key for this file_id
             composite_key = file_id_to_composite_key.get(file_id)
             
+            # If we don't have a composite key, try to find any result with this file_id
+            if not composite_key:
+                for key, result in st.session_state.extraction_results.items():
+                    if isinstance(result, dict) and result.get("file_id") == file_id:
+                        composite_key = key
+                        break
+            
+            # If we still don't have a composite key or it's not in extraction_results
             if not composite_key or composite_key not in st.session_state.extraction_results:
                 logger.warning(f"Composite key for file ID {file_id} not found in extraction_results")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_id_to_file_name.get(file_id, "Unknown"),
-                    "success": False,
-                    "error": "File ID not found in extraction results"
-                }
                 
-            result_data = st.session_state.extraction_results[composite_key]
+                # Try to find the file in processing_state results
+                if hasattr(st.session_state, "processing_state") and "results" in st.session_state.processing_state:
+                    if file_id in st.session_state.processing_state["results"]:
+                        result_data = st.session_state.processing_state["results"][file_id]
+                        logger.info(f"Found result for file ID {file_id} in processing_state results")
+                    else:
+                        return {
+                            "file_id": file_id,
+                            "file_name": file_id_to_file_name.get(file_id, "Unknown"),
+                            "success": False,
+                            "error": "File ID not found in extraction results or processing results"
+                        }
+                else:
+                    return {
+                        "file_id": file_id,
+                        "file_name": file_id_to_file_name.get(file_id, "Unknown"),
+                        "success": False,
+                        "error": "File ID not found in extraction results"
+                    }
+            else:
+                result_data = st.session_state.extraction_results[composite_key]
+                
             file_name = result_data.get("file_name", file_id_to_file_name.get(file_id, "Unknown"))
             
             # Get Box client
