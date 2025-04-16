@@ -7,6 +7,12 @@ from typing import Dict, List, Any
 import json
 import logging
 import re
+import sys
+import os
+
+# Add the modules directory to the path to import session_state_manager
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from modules.session_state_manager import initialize_app_session_state, get_safe_session_state, set_safe_session_state, debug_session_state
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -19,50 +25,26 @@ def apply_metadata():
     """
     st.title("Apply Metadata")
     
+    # CRITICAL FIX: Initialize all session state variables at the start
+    # This prevents KeyError and AttributeError when accessing session state
+    initialize_app_session_state()
+    
+    # Add debug button in sidebar for troubleshooting
+    if st.sidebar.checkbox("Show Debug Info", key="show_debug_info"):
+        debug_info = debug_session_state()
+        st.sidebar.json(debug_info)
+    
     # Validate session state
-    if not hasattr(st.session_state, "authenticated") or not hasattr(st.session_state, "client") or not st.session_state.authenticated or not st.session_state.client:
+    if not get_safe_session_state("authenticated", False) or not get_safe_session_state("client"):
         st.error("Please authenticate with Box first")
         return
     
-    # Ensure extraction_results is initialized
-    if not hasattr(st.session_state, "extraction_results"):
-        st.session_state.extraction_results = {}
-        logger.info("Initialized extraction_results in apply_metadata")
-    
-    # Ensure selected_result_ids is initialized
-    if not hasattr(st.session_state, "selected_result_ids"):
-        st.session_state.selected_result_ids = []
-        logger.info("Initialized selected_result_ids in apply_metadata")
-    
-    # Ensure application_state is initialized
-    if not hasattr(st.session_state, "application_state"):
-        st.session_state.application_state = {
-            "is_applying": False,
-            "applied_files": 0,
-            "total_files": 0,
-            "current_batch": [],
-            "results": {},
-            "errors": {}
-        }
-        logger.info("Initialized application_state in apply_metadata")
-    
-    # Ensure metadata_config is initialized
-    if not hasattr(st.session_state, "metadata_config"):
-        st.session_state.metadata_config = {
-            "extraction_method": "freeform",
-            "freeform_prompt": "Extract key metadata from this document.",
-            "use_template": False,
-            "template_id": "",
-            "custom_fields": [],
-            "ai_model": "azure__openai__gpt_4o_mini",
-            "batch_size": 5
-        }
-        logger.info("Initialized metadata_config in apply_metadata")
-    
-    if not hasattr(st.session_state, "extraction_results") or not st.session_state.extraction_results:
+    # Check if extraction results exist
+    extraction_results = get_safe_session_state("extraction_results", {})
+    if not extraction_results:
         st.warning("No extraction results available. Please process files first.")
         if st.button("Go to Process Files", key="go_to_process_files_btn"):
-            st.session_state.current_page = "Process Files"
+            set_safe_session_state("current_page", "Process Files")
             st.rerun()
         return
     
@@ -72,14 +54,15 @@ def apply_metadata():
     file_id_to_file_name = {}
     
     # Debug the structure of extraction_results
-    logger.info(f"Extraction results keys: {list(st.session_state.extraction_results.keys())}")
-    logger.info(f"Extraction results structure: {json.dumps({str(k): str(type(v)) for k, v in st.session_state.extraction_results.items()}, indent=2)}")
+    logger.info(f"Extraction results keys: {list(extraction_results.keys())}")
+    logger.info(f"Extraction results structure: {json.dumps({str(k): str(type(v)) for k, v in extraction_results.items()}, indent=2)}")
     
     # Check if we have any selected files in session state
-    if hasattr(st.session_state, "selected_files") and st.session_state.selected_files:
-        logger.info(f"Found {len(st.session_state.selected_files)} selected files in session state")
-        for file_info in st.session_state.selected_files:
-            if "id" in file_info and file_info["id"]:
+    selected_files = get_safe_session_state("selected_files", [])
+    if selected_files:
+        logger.info(f"Found {len(selected_files)} selected files in session state")
+        for file_info in selected_files:
+            if isinstance(file_info, dict) and "id" in file_info and file_info["id"]:
                 file_id = file_info["id"]
                 file_name = file_info.get("name", "Unknown")
                 available_file_ids.append(file_id)
@@ -87,8 +70,9 @@ def apply_metadata():
                 logger.info(f"Added file ID {file_id} from selected_files")
     
     # Check if we have any processing results in session state
-    if hasattr(st.session_state, "processing_state") and "results" in st.session_state.processing_state:
-        processing_results = st.session_state.processing_state["results"]
+    processing_state = get_safe_session_state("processing_state", {})
+    if processing_state and "results" in processing_state:
+        processing_results = processing_state["results"]
         logger.info(f"Found {len(processing_results)} results in processing_state")
         for file_id, result in processing_results.items():
             if file_id not in available_file_ids:
@@ -97,7 +81,7 @@ def apply_metadata():
                 logger.info(f"Added file ID {file_id} from processing_state results")
     
     # Now check extraction_results for file IDs
-    for key, result in st.session_state.extraction_results.items():
+    for key, result in extraction_results.items():
         # Skip if not a dictionary
         if not isinstance(result, dict):
             logger.warning(f"Skipping non-dictionary result for key {key}: {type(result)}")
@@ -136,7 +120,7 @@ def apply_metadata():
     # If we still don't have file IDs, try to extract them from the result content
     if not available_file_ids:
         logger.info("No file IDs found yet, trying to extract from result content")
-        for key, result in st.session_state.extraction_results.items():
+        for key, result in extraction_results.items():
             if not isinstance(result, dict):
                 continue
                 
@@ -160,13 +144,13 @@ def apply_metadata():
                         logger.info(f"Added file ID {file_id} from deeply nested dictionary for key {key}")
     
     # If we still don't have file IDs, check if there are any in processing_state
-    if not available_file_ids and hasattr(st.session_state, "processing_state"):
+    if not available_file_ids and "current_file_index" in processing_state:
         logger.info("No file IDs found yet, checking processing_state")
         # Check current_file_index
-        if "current_file_index" in st.session_state.processing_state and st.session_state.processing_state["current_file_index"] >= 0:
-            idx = st.session_state.processing_state["current_file_index"]
-            if hasattr(st.session_state, "selected_files") and idx < len(st.session_state.selected_files):
-                file_info = st.session_state.selected_files[idx]
+        if processing_state["current_file_index"] >= 0:
+            idx = processing_state["current_file_index"]
+            if idx < len(selected_files):
+                file_info = selected_files[idx]
                 if "id" in file_info and file_info["id"]:
                     file_id = file_info["id"]
                     available_file_ids.append(file_id)
@@ -182,12 +166,12 @@ def apply_metadata():
     logger.info(f"File ID to file name mapping: {file_id_to_file_name}")
     
     # CRITICAL: If we still don't have any file IDs, try to recover from selected_files
-    if not available_file_ids and hasattr(st.session_state, "selected_files") and st.session_state.selected_files:
+    if not available_file_ids and selected_files:
         st.warning("No file IDs found in extraction results. Using selected files as fallback.")
         logger.warning("No file IDs found in extraction results. Using selected files as fallback.")
         
-        for file_info in st.session_state.selected_files:
-            if "id" in file_info and file_info["id"]:
+        for file_info in selected_files:
+            if isinstance(file_info, dict) and "id" in file_info and file_info["id"]:
                 file_id = file_info["id"]
                 available_file_ids.append(file_id)
                 file_id_to_file_name[file_id] = file_info.get("name", "Unknown")
@@ -195,19 +179,29 @@ def apply_metadata():
                 synthetic_key = f"{file_id}_fallback"
                 file_id_to_composite_key[file_id] = synthetic_key
                 # Create a synthetic result if needed
-                if synthetic_key not in st.session_state.extraction_results:
-                    st.session_state.extraction_results[synthetic_key] = {
+                if synthetic_key not in extraction_results:
+                    extraction_results[synthetic_key] = {
                         "file_id": file_id,
                         "file_name": file_info.get("name", "Unknown"),
                         "result": {"note": "This is a fallback entry with no extracted metadata"}
                     }
+                    # Update session state with the new synthetic result
+                    set_safe_session_state("extraction_results", extraction_results)
                 logger.info(f"Added fallback file ID {file_id} from selected_files")
     
     st.write("Apply extracted metadata to your Box files.")
     
     # Update total files count based on available_file_ids
-    if hasattr(st.session_state, "application_state"):
-        st.session_state.application_state["total_files"] = len(available_file_ids)
+    application_state = get_safe_session_state("application_state", {
+        "is_applying": False,
+        "applied_files": 0,
+        "total_files": 0,
+        "current_batch": [],
+        "results": {},
+        "errors": {}
+    })
+    application_state["total_files"] = len(available_file_ids)
+    set_safe_session_state("application_state", application_state)
     
     # Display selected files
     st.subheader("Selected Files")
@@ -215,7 +209,7 @@ def apply_metadata():
     if not available_file_ids:
         st.error("No file IDs available for metadata application. Please process files first.")
         if st.button("Go to Process Files", key="go_to_process_files_error_btn"):
-            st.session_state.current_page = "Process Files"
+            set_safe_session_state("current_page", "Process Files")
             st.rerun()
         return
     
@@ -230,13 +224,14 @@ def apply_metadata():
     st.subheader("Application Options")
     
     # Determine if we're using structured or freeform extraction
-    is_structured = st.session_state.metadata_config.get("extraction_method") == "structured"
+    metadata_config = get_safe_session_state("metadata_config", {})
+    is_structured = metadata_config.get("extraction_method") == "structured"
     
     if is_structured:
         # For structured extraction
-        if st.session_state.metadata_config.get("use_template", False):
+        if metadata_config.get("use_template", False):
             # Using existing template
-            st.write(f"Metadata will be applied using template ID: {st.session_state.metadata_config['template_id']}")
+            st.write(f"Metadata will be applied using template ID: {metadata_config.get('template_id', '')}")
             
             # Option to overwrite existing metadata
             overwrite = st.checkbox(
@@ -293,7 +288,7 @@ def apply_metadata():
     with col1:
         apply_button = st.button(
             "Apply Metadata",
-            disabled=st.session_state.application_state["is_applying"],
+            disabled=application_state.get("is_applying", False),
             use_container_width=True,
             key="apply_metadata_btn"
         )
@@ -301,7 +296,7 @@ def apply_metadata():
     with col2:
         cancel_button = st.button(
             "Cancel",
-            disabled=not st.session_state.application_state["is_applying"],
+            disabled=not application_state.get("is_applying", False),
             use_container_width=True,
             key="cancel_btn"
         )
@@ -312,24 +307,28 @@ def apply_metadata():
     # Apply metadata to a single file using Box's recommended approach
     def apply_metadata_to_file(file_id):
         try:
+            # Get the latest session state values
+            current_extraction_results = get_safe_session_state("extraction_results", {})
+            
             # Get the composite key for this file_id
             composite_key = file_id_to_composite_key.get(file_id)
             
             # If we don't have a composite key, try to find any result with this file_id
             if not composite_key:
-                for key, result in st.session_state.extraction_results.items():
+                for key, result in current_extraction_results.items():
                     if isinstance(result, dict) and result.get("file_id") == file_id:
                         composite_key = key
                         break
             
             # If we still don't have a composite key or it's not in extraction_results
-            if not composite_key or composite_key not in st.session_state.extraction_results:
+            if not composite_key or composite_key not in current_extraction_results:
                 logger.warning(f"Composite key for file ID {file_id} not found in extraction_results")
                 
                 # Try to find the file in processing_state results
-                if hasattr(st.session_state, "processing_state") and "results" in st.session_state.processing_state:
-                    if file_id in st.session_state.processing_state["results"]:
-                        result_data = st.session_state.processing_state["results"][file_id]
+                current_processing_state = get_safe_session_state("processing_state", {})
+                if "results" in current_processing_state:
+                    if file_id in current_processing_state["results"]:
+                        result_data = current_processing_state["results"][file_id]
                         logger.info(f"Found result for file ID {file_id} in processing_state results")
                     else:
                         return {
@@ -346,12 +345,19 @@ def apply_metadata():
                         "error": "File ID not found in extraction results"
                     }
             else:
-                result_data = st.session_state.extraction_results[composite_key]
+                result_data = current_extraction_results[composite_key]
                 
             file_name = result_data.get("file_name", file_id_to_file_name.get(file_id, "Unknown"))
             
             # Get Box client
-            client = st.session_state.client
+            client = get_safe_session_state("client")
+            if not client:
+                return {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "success": False,
+                    "error": "Box client not available. Please authenticate again."
+                }
             
             # Extract the metadata to apply
             metadata_values = {}
@@ -506,8 +512,9 @@ def apply_metadata():
         # Validate available_file_ids
         if not available_file_ids:
             logger.error("No file IDs available for metadata application")
-            if hasattr(st.session_state, "application_state"):
-                st.session_state.application_state["is_applying"] = False
+            application_state = get_safe_session_state("application_state", {})
+            application_state["is_applying"] = False
+            set_safe_session_state("application_state", application_state)
             st.error("No files available for metadata application")
             return
             
@@ -515,10 +522,7 @@ def apply_metadata():
         logger.info(f"Starting metadata application for {total_files} files")
         
         # Reset application state
-        if not hasattr(st.session_state, "application_state"):
-            st.session_state.application_state = {}
-            
-        st.session_state.application_state = {
+        application_state = {
             "is_applying": True,
             "applied_files": 0,
             "total_files": total_files,
@@ -526,10 +530,13 @@ def apply_metadata():
             "results": {},
             "errors": {}
         }
+        set_safe_session_state("application_state", application_state)
         
         # Process files in batches
         for i in range(0, total_files, batch_size):
-            if not hasattr(st.session_state, "application_state") or not st.session_state.application_state["is_applying"]:
+            # Get the latest application state
+            current_application_state = get_safe_session_state("application_state", {})
+            if not current_application_state.get("is_applying", False):
                 # Application was cancelled
                 logger.info("Metadata application cancelled")
                 break
@@ -539,10 +546,11 @@ def apply_metadata():
             current_batch = available_file_ids[i:batch_end]
             
             # Update current batch in state
-            st.session_state.application_state["current_batch"] = []
+            current_application_state["current_batch"] = []
             for file_id in current_batch:
                 file_name = file_id_to_file_name.get(file_id, "Unknown")
-                st.session_state.application_state["current_batch"].append(file_name)
+                current_application_state["current_batch"].append(file_name)
+            set_safe_session_state("application_state", current_application_state)
             
             # Process batch in parallel
             with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
@@ -551,7 +559,9 @@ def apply_metadata():
                 
                 # Process results as they complete
                 for future in concurrent.futures.as_completed(future_to_file):
-                    if not hasattr(st.session_state, "application_state") or not st.session_state.application_state["is_applying"]:
+                    # Get the latest application state
+                    current_application_state = get_safe_session_state("application_state", {})
+                    if not current_application_state.get("is_applying", False):
                         # Application was cancelled
                         executor.shutdown(wait=False)
                         break
@@ -562,39 +572,42 @@ def apply_metadata():
                         
                         if result["success"]:
                             # Store success result
-                            st.session_state.application_state["results"][file_id] = {
+                            current_application_state["results"][file_id] = {
                                 "file_name": result["file_name"],
                                 "file_id": file_id,
                                 "metadata": result.get("metadata", {})
                             }
                         else:
                             # Store error result
-                            st.session_state.application_state["errors"][file_id] = {
+                            current_application_state["errors"][file_id] = {
                                 "file_name": result["file_name"],
                                 "file_id": file_id,
                                 "error": result["error"]
                             }
                         
                         # Update progress
-                        st.session_state.application_state["applied_files"] += 1
+                        current_application_state["applied_files"] += 1
+                        set_safe_session_state("application_state", current_application_state)
                     
                     except Exception as e:
                         # Handle unexpected errors
                         file_name = file_id_to_file_name.get(file_id, "Unknown")
-                            
-                        st.session_state.application_state["errors"][file_id] = {
+                        
+                        current_application_state["errors"][file_id] = {
                             "file_name": file_name,
                             "file_id": file_id,
                             "error": f"Unexpected error: {str(e)}"
                         }
                         
                         # Update progress
-                        st.session_state.application_state["applied_files"] += 1
+                        current_application_state["applied_files"] += 1
+                        set_safe_session_state("application_state", current_application_state)
         
         # Application complete
-        if hasattr(st.session_state, "application_state"):
-            st.session_state.application_state["is_applying"] = False
-            st.session_state.application_state["current_batch"] = []
+        final_application_state = get_safe_session_state("application_state", {})
+        final_application_state["is_applying"] = False
+        final_application_state["current_batch"] = []
+        set_safe_session_state("application_state", final_application_state)
     
     # Handle apply button click
     if apply_button:
@@ -604,47 +617,49 @@ def apply_metadata():
     
     # Handle cancel button click
     if cancel_button:
-        if hasattr(st.session_state, "application_state"):
-            st.session_state.application_state["is_applying"] = False
+        current_application_state = get_safe_session_state("application_state", {})
+        current_application_state["is_applying"] = False
+        set_safe_session_state("application_state", current_application_state)
         st.warning("Metadata application cancelled.")
     
     # Display progress
     with progress_container:
-        if hasattr(st.session_state, "application_state") and st.session_state.application_state["is_applying"]:
+        current_application_state = get_safe_session_state("application_state", {})
+        if current_application_state.get("is_applying", False):
             st.write("#### Applying Metadata")
             
             # Progress bar
-            progress = st.session_state.application_state["applied_files"] / st.session_state.application_state["total_files"]
+            progress = current_application_state.get("applied_files", 0) / current_application_state.get("total_files", 1)
             st.progress(progress)
             
             # Current batch
-            if st.session_state.application_state["current_batch"]:
+            if current_application_state.get("current_batch", []):
                 st.write("**Current batch:**")
-                for file_name in st.session_state.application_state["current_batch"]:
+                for file_name in current_application_state["current_batch"]:
                     st.write(f"- {file_name}")
             
             # Stats
-            st.write(f"**Progress:** {st.session_state.application_state['applied_files']} of {st.session_state.application_state['total_files']} files processed")
+            st.write(f"**Progress:** {current_application_state.get('applied_files', 0)} of {current_application_state.get('total_files', 0)} files processed")
         
-        elif hasattr(st.session_state, "application_state") and st.session_state.application_state["applied_files"] > 0:
+        elif current_application_state.get("applied_files", 0) > 0:
             # Application complete
             st.write("#### Metadata Application Complete")
             
             # Success count
-            success_count = len(st.session_state.application_state["results"])
-            error_count = len(st.session_state.application_state["errors"])
+            success_count = len(current_application_state.get("results", {}))
+            error_count = len(current_application_state.get("errors", {}))
             
             st.write(f"**Results:** {success_count} successful, {error_count} failed")
             
             # Display errors if any
             if error_count > 0:
                 with st.expander("View Errors"):
-                    for file_id, error_data in st.session_state.application_state["errors"].items():
+                    for file_id, error_data in current_application_state.get("errors", {}).items():
                         st.write(f"**{error_data['file_name']}:** {error_data['error']}")
             
             # Reset button
             if st.button("Reset", key="reset_btn"):
-                st.session_state.application_state = {
+                reset_application_state = {
                     "is_applying": False,
                     "applied_files": 0,
                     "total_files": len(available_file_ids),
@@ -652,4 +667,5 @@ def apply_metadata():
                     "results": {},
                     "errors": {}
                 }
+                set_safe_session_state("application_state", reset_application_state)
                 st.rerun()
