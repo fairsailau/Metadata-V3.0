@@ -1,13 +1,4 @@
 import streamlit as st
-
-# Set page config (must be the first Streamlit command)
-st.set_page_config(
-    page_title="Box AI Metadata Extraction",
-    page_icon="📦",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
 import os
 import sys
 import logging
@@ -71,8 +62,8 @@ def initialize_session_state():
         st.session_state.extraction_results = {}
         logger.info("Initialized extraction_results in session state")
     
-    # Selected results for metadata application
-    if "selected_result_ids" not in st.session_state:
+    # Selected results for metadata application - FIXED: Use direct attribute assignment
+    if not hasattr(st.session_state, "selected_result_ids"):
         st.session_state.selected_result_ids = []
         logger.info("Initialized selected_result_ids in session state")
     
@@ -119,6 +110,14 @@ def initialize_session_state():
     if "feedback_data" not in st.session_state:
         st.session_state.feedback_data = {}
         logger.info("Initialized feedback_data in session state")
+
+# Set page config (must be the first Streamlit command)
+st.set_page_config(
+    page_title="Box AI Metadata Extraction",
+    page_icon="📦",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # Initialize session state
 initialize_session_state()

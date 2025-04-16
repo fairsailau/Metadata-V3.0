@@ -25,8 +25,8 @@ def view_results():
         st.session_state.extraction_results = {}
         logger.info("Initialized extraction_results in view_results")
     
-    # Ensure selected_result_ids is initialized
-    if "selected_result_ids" not in st.session_state:
+    # Ensure selected_result_ids is initialized - FIXED: Use hasattr check instead of 'in' operator
+    if not hasattr(st.session_state, "selected_result_ids"):
         st.session_state.selected_result_ids = []
         logger.info("Initialized selected_result_ids in view_results")
     

@@ -28,10 +28,14 @@ def apply_metadata():
         st.session_state.extraction_results = {}
         logger.info("Initialized extraction_results in apply_metadata")
     
-    # Ensure selected_result_ids is initialized
-    if "selected_result_ids" not in st.session_state:
-        st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
-        logger.info("Initialized selected_result_ids in apply_metadata")
+    # Ensure selected_result_ids is initialized - FIXED: Use hasattr check instead of 'in' operator
+    if not hasattr(st.session_state, "selected_result_ids"):
+        # Initialize with empty list first to avoid KeyError
+        st.session_state.selected_result_ids = []
+        # Then populate with extraction_results keys if available
+        if st.session_state.extraction_results:
+            st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
+        logger.info(f"Initialized selected_result_ids in apply_metadata with {len(st.session_state.selected_result_ids)} items")
     
     # Ensure application_state is initialized
     if "application_state" not in st.session_state:
@@ -342,6 +346,11 @@ def apply_metadata():
     
     # Apply metadata with batch processing
     def apply_metadata_batch():
+        # FIXED: Ensure selected_result_ids exists before accessing it
+        if not hasattr(st.session_state, "selected_result_ids"):
+            st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
+            logger.info(f"Initialized selected_result_ids in apply_metadata_batch with {len(st.session_state.selected_result_ids)} items")
+        
         # Validate selected_result_ids
         valid_file_ids = []
         for file_id in st.session_state.selected_result_ids:
