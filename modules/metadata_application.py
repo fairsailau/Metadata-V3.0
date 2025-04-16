@@ -1,11 +1,10 @@
 import streamlit as st
-import pandas as pd
+import logging
 import time
 import threading
 import concurrent.futures
 from typing import Dict, List, Any
 import json
-import logging
 import re
 
 # Configure logging
@@ -22,9 +21,12 @@ def apply_metadata():
     # Initialize session state variables if they don't exist
     initialize_session_state()
     
-    # Validate session state
-    if "authenticated" not in st.session_state or not st.session_state.authenticated or "client" not in st.session_state or not st.session_state.client:
-        st.error("Please authenticate with Box first")
+    # CRITICAL FIX: Verify client authentication before proceeding
+    if not verify_client_authentication():
+        st.error("Box client authentication is required. Please authenticate first.")
+        if st.button("Go to Authentication", key="go_to_auth_btn"):
+            st.session_state.current_page = "Home"  # Assuming Home page has authentication
+            st.rerun()
         return
     
     # Check if extraction results exist
@@ -40,8 +42,7 @@ def apply_metadata():
     logger.info(f"Extraction results keys: {list(extraction_results.keys())}")
     logger.info(f"Extraction results structure: {json.dumps({str(k): str(type(v)) for k, v in extraction_results.items()}, indent=2)}")
     
-    # CRITICAL FIX: Direct file ID application approach
-    # Instead of trying to map file IDs to composite keys, we'll work directly with file IDs
+    # Extract file IDs and metadata from extraction_results
     available_file_ids = []
     file_id_to_file_name = {}
     file_id_to_metadata = {}
@@ -59,12 +60,11 @@ def apply_metadata():
                 logger.info(f"Added file ID {file_id} from selected_files")
     
     # Extract metadata directly from extraction_results
-    # This is the key fix - we're looking for the file ID as a direct key in extraction_results
     for key, result in extraction_results.items():
         logger.info(f"Checking extraction result key: {key}")
         
         # Check if the key itself is a file ID (direct match)
-        if key == "1773119545338" or (isinstance(key, str) and key.isdigit()):
+        if isinstance(key, str) and key.isdigit():
             file_id = key
             if file_id not in available_file_ids:
                 available_file_ids.append(file_id)
@@ -108,31 +108,6 @@ def apply_metadata():
                 
                 logger.info(f"Added file ID {file_id} from result object")
     
-    # CRITICAL FIX: If the file ID is in the keys as a string inside a list, extract it
-    # This handles the case where extraction_results keys are logged as ['1773119545338']
-    for key, result in extraction_results.items():
-        if isinstance(key, str) and key.startswith("[") and key.endswith("]"):
-            try:
-                # Try to parse the key as a JSON array
-                key_list = json.loads(key)
-                if isinstance(key_list, list) and len(key_list) > 0:
-                    for item in key_list:
-                        if isinstance(item, str) and (item.isdigit() or item == "1773119545338"):
-                            file_id = item
-                            if file_id not in available_file_ids:
-                                available_file_ids.append(file_id)
-                                logger.info(f"Added file ID {file_id} from list key: {key}")
-                                
-                                # Extract metadata
-                                if isinstance(result, dict):
-                                    if "result" in result and result["result"]:
-                                        file_id_to_metadata[file_id] = result["result"]
-                                    elif "api_response" in result and "answer" in result["api_response"]:
-                                        file_id_to_metadata[file_id] = result["api_response"]["answer"]
-            except json.JSONDecodeError:
-                # Not a valid JSON array, skip
-                pass
-    
     # Check if we have any processing results in session state
     if "processing_state" in st.session_state and "results" in st.session_state.processing_state:
         processing_results = st.session_state.processing_state["results"]
@@ -147,40 +122,6 @@ def apply_metadata():
                 # Extract metadata
                 if "result" in result:
                     file_id_to_metadata[file_id] = result["result"]
-    
-    # CRITICAL FIX: Special handling for file ID 1773119545338
-    # This ensures we always include this specific file ID that appears in the logs
-    specific_file_id = "1773119545338"
-    if specific_file_id not in available_file_ids:
-        logger.info(f"Adding specific file ID {specific_file_id} as fallback")
-        available_file_ids.append(specific_file_id)
-        
-        # Try to find metadata for this file ID
-        for key, result in extraction_results.items():
-            if isinstance(result, dict) and "file_id" in result and result["file_id"] == specific_file_id:
-                if "result" in result:
-                    file_id_to_metadata[specific_file_id] = result["result"]
-                elif "api_response" in result and "answer" in result["api_response"]:
-                    file_id_to_metadata[specific_file_id] = result["api_response"]["answer"]
-                
-                if "file_name" in result:
-                    file_id_to_file_name[specific_file_id] = result["file_name"]
-    
-    # If we still don't have metadata for the specific file ID, create a fallback
-    if specific_file_id not in file_id_to_metadata:
-        # Look for any metadata in the extraction_results
-        for key, result in extraction_results.items():
-            if isinstance(result, dict):
-                if "answer" in result:
-                    file_id_to_metadata[specific_file_id] = result["answer"]
-                    break
-                elif "api_response" in result and "answer" in result["api_response"]:
-                    file_id_to_metadata[specific_file_id] = result["api_response"]["answer"]
-                    break
-    
-    # If we still don't have a file name for the specific file ID, use a default
-    if specific_file_id not in file_id_to_file_name:
-        file_id_to_file_name[specific_file_id] = "Purchase Agreement - Rubicon Agriculture AgroBox [2.23.17].pdf"
     
     # Remove duplicates while preserving order
     available_file_ids = list(dict.fromkeys(available_file_ids))
@@ -313,11 +254,20 @@ def apply_metadata():
         try:
             file_name = file_id_to_file_name.get(file_id, "Unknown")
             
-            # Get Box client
+            # CRITICAL FIX: Verify client authentication before using client
+            if not verify_client_authentication():
+                logger.error(f"Box client not authenticated when applying metadata to file {file_id}")
+                return {
+                    "file_id": file_id,
+                    "file_name": file_name,
+                    "success": False,
+                    "error": "Box client not authenticated. Please authenticate and try again."
+                }
+            
+            # Get Box client - now we know it exists
             client = st.session_state.client
             
-            # CRITICAL FIX: Get metadata directly from file_id_to_metadata mapping
-            # This avoids the need to find a composite key in extraction_results
+            # Get metadata directly from file_id_to_metadata mapping
             metadata_values = {}
             
             if file_id in file_id_to_metadata:
@@ -363,17 +313,6 @@ def apply_metadata():
                                         metadata_values[k] = v
                                 else:
                                     metadata_values["answer"] = str(result["api_response"]["answer"])
-            
-            # If still no metadata values, use a fallback
-            if not metadata_values and file_id == "1773119545338":
-                # Use the metadata from the logs as fallback
-                metadata_values = {
-                    "Effective Date": "February 23, 2017",
-                    "Seller": "Quarry Jumpers Produce, Inc., an Indiana corporation d/b/a Rubicon Agriculture",
-                    "Buyer": "Indianapolis Public Schools, also known as the IPS",
-                    "Product": "Corn"
-                }
-                logger.info(f"Using fallback metadata for file ID {file_id}")
             
             # If no metadata values, log warning and return
             if not metadata_values:
@@ -488,6 +427,13 @@ def apply_metadata():
                 logger.info("Metadata application cancelled")
                 break
             
+            # CRITICAL FIX: Verify client authentication before processing batch
+            if not verify_client_authentication():
+                logger.error("Box client not authenticated when processing batch")
+                st.session_state.application_state["is_applying"] = False
+                st.error("Box client not authenticated. Please authenticate and try again.")
+                return
+            
             # Get current batch
             batch_end = min(i + batch_size, total_files)
             current_batch = available_file_ids[i:batch_end]
@@ -551,9 +497,13 @@ def apply_metadata():
     
     # Handle apply button click
     if apply_button:
-        # Start application in a separate thread
-        application_thread = threading.Thread(target=apply_metadata_batch)
-        application_thread.start()
+        # CRITICAL FIX: Verify client authentication before starting application
+        if not verify_client_authentication():
+            st.error("Box client not authenticated. Please authenticate and try again.")
+        else:
+            # Start application in a separate thread
+            application_thread = threading.Thread(target=apply_metadata_batch)
+            application_thread.start()
     
     # Handle cancel button click
     if cancel_button:
@@ -683,3 +633,103 @@ def initialize_session_state():
     if "feedback_data" not in st.session_state:
         st.session_state.feedback_data = {}
         logger.info("Initialized feedback_data in session state")
+        
+    # CRITICAL FIX: Authentication persistence
+    if "auth_credentials" not in st.session_state:
+        st.session_state.auth_credentials = {}
+        logger.info("Initialized auth_credentials in session state")
+
+def verify_client_authentication():
+    """
+    Verify that the Box client is authenticated and available in session state.
+    If not, attempt to re-authenticate using stored credentials.
+    
+    Returns:
+        bool: True if client is authenticated, False otherwise
+    """
+    # Check if client exists in session state
+    if "client" not in st.session_state or st.session_state.client is None:
+        logger.warning("Box client not found in session state")
+        
+        # Try to re-authenticate using stored credentials
+        if "auth_credentials" in st.session_state and st.session_state.auth_credentials:
+            try:
+                logger.info("Attempting to re-authenticate using stored credentials")
+                
+                # Import Box SDK
+                try:
+                    from boxsdk import OAuth2, Client
+                except ImportError:
+                    logger.error("Failed to import Box SDK")
+                    return False
+                
+                # Get stored credentials
+                creds = st.session_state.auth_credentials
+                
+                if "access_token" in creds and "refresh_token" in creds and "client_id" in creds and "client_secret" in creds:
+                    # Create OAuth object
+                    oauth = OAuth2(
+                        client_id=creds["client_id"],
+                        client_secret=creds["client_secret"],
+                        access_token=creds["access_token"],
+                        refresh_token=creds["refresh_token"],
+                        store_tokens=store_tokens
+                    )
+                    
+                    # Create client
+                    client = Client(oauth)
+                    
+                    # Verify client works by getting current user
+                    user = client.user().get()
+                    
+                    # Store client in session state
+                    st.session_state.client = client
+                    st.session_state.authenticated = True
+                    
+                    logger.info(f"Successfully re-authenticated as {user.name}")
+                    return True
+                else:
+                    logger.warning("Incomplete credentials in auth_credentials")
+                    return False
+            except Exception as e:
+                logger.error(f"Error re-authenticating: {str(e)}")
+                return False
+        else:
+            logger.warning("No stored credentials found for re-authentication")
+            return False
+    
+    # Client exists, verify it's working
+    try:
+        # Try to get current user to verify client is working
+        user = st.session_state.client.user().get()
+        logger.info(f"Verified client authentication as {user.name}")
+        return True
+    except Exception as e:
+        logger.error(f"Error verifying client: {str(e)}")
+        
+        # Clear invalid client
+        st.session_state.client = None
+        st.session_state.authenticated = False
+        
+        # Try to re-authenticate
+        return verify_client_authentication()
+
+def store_tokens(access_token, refresh_token):
+    """
+    Store Box API tokens in session state for authentication persistence.
+    This function is passed to the OAuth2 object to handle token refresh.
+    
+    Args:
+        access_token (str): The new access token
+        refresh_token (str): The new refresh token
+    """
+    # Initialize auth_credentials if it doesn't exist
+    if "auth_credentials" not in st.session_state:
+        st.session_state.auth_credentials = {}
+    
+    # Update tokens
+    st.session_state.auth_credentials["access_token"] = access_token
+    st.session_state.auth_credentials["refresh_token"] = refresh_token
+    
+    logger.info("Updated authentication tokens in session state")
+    return access_token, refresh_token
