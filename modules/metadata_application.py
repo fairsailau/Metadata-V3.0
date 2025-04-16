@@ -66,26 +66,56 @@ def apply_metadata():
             st.rerun()
         return
     
-    # FIXED: Extract file IDs from composite keys in extraction_results
-    # The composite key format is "file_id_extraction_method"
+    # FIXED: Improved method to extract file IDs from extraction_results
+    # This approach handles composite keys more robustly
     available_file_ids = []
     file_id_to_composite_key = {}
+    file_id_to_file_name = {}
     
-    for composite_key in st.session_state.extraction_results.keys():
-        # Extract file_id from composite key (format: file_id_extraction_method)
-        match = re.match(r'([^_]+)_', composite_key)
-        if match:
-            file_id = match.group(1)
+    # First, check if extraction_results contains direct file_id keys from processing.py
+    # In processing.py, results are stored with file_id as the key
+    direct_file_ids = [key for key in st.session_state.extraction_results.keys() 
+                      if isinstance(key, str) and key.isdigit()]
+    
+    if direct_file_ids:
+        # If we have direct file IDs, use them
+        logger.info(f"Found direct file IDs in extraction_results: {direct_file_ids}")
+        for file_id in direct_file_ids:
+            result = st.session_state.extraction_results[file_id]
             available_file_ids.append(file_id)
-            file_id_to_composite_key[file_id] = composite_key
-            logger.info(f"Extracted file_id {file_id} from composite key {composite_key}")
+            file_id_to_composite_key[file_id] = file_id  # Same key
+            file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
+    else:
+        # Otherwise, try to extract file IDs from composite keys
+        logger.info("No direct file IDs found, attempting to extract from composite keys")
+        for composite_key in st.session_state.extraction_results.keys():
+            result = st.session_state.extraction_results[composite_key]
+            
+            # Try to get file_id directly from the result object first
+            if "file_id" in result and result["file_id"]:
+                file_id = result["file_id"]
+                available_file_ids.append(file_id)
+                file_id_to_composite_key[file_id] = composite_key
+                file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
+                logger.info(f"Extracted file_id {file_id} from result object for key {composite_key}")
+            else:
+                # Try to extract file_id from composite key as a fallback
+                # The composite key format could be "file_id_extraction_method" or something else
+                match = re.match(r'([^_]+)_', composite_key)
+                if match:
+                    file_id = match.group(1)
+                    available_file_ids.append(file_id)
+                    file_id_to_composite_key[file_id] = composite_key
+                    file_id_to_file_name[file_id] = result.get("file_name", "Unknown")
+                    logger.info(f"Extracted file_id {file_id} from composite key {composite_key}")
     
     # Remove duplicates while preserving order
     available_file_ids = list(dict.fromkeys(available_file_ids))
     
     # Debug logging
-    logger.info(f"Available file IDs extracted from composite keys: {available_file_ids}")
+    logger.info(f"Available file IDs: {available_file_ids}")
     logger.info(f"File ID to composite key mapping: {file_id_to_composite_key}")
+    logger.info(f"File ID to file name mapping: {file_id_to_file_name}")
     
     st.write("Apply extracted metadata to your Box files.")
     
@@ -99,10 +129,8 @@ def apply_metadata():
     
     with st.expander("View Selected Files"):
         for file_id in available_file_ids:
-            composite_key = file_id_to_composite_key.get(file_id)
-            if composite_key and composite_key in st.session_state.extraction_results:
-                result = st.session_state.extraction_results[composite_key]
-                st.write(f"- {result.get('file_name', 'Unknown')} ({file_id})")
+            file_name = file_id_to_file_name.get(file_id, "Unknown")
+            st.write(f"- {file_name} ({file_id})")
     
     # Metadata application options
     st.subheader("Application Options")
@@ -197,13 +225,13 @@ def apply_metadata():
                 logger.warning(f"Composite key for file ID {file_id} not found in extraction_results")
                 return {
                     "file_id": file_id,
-                    "file_name": "Unknown",
+                    "file_name": file_id_to_file_name.get(file_id, "Unknown"),
                     "success": False,
                     "error": "File ID not found in extraction results"
                 }
                 
             result_data = st.session_state.extraction_results[composite_key]
-            file_name = result_data.get("file_name", "Unknown")
+            file_name = result_data.get("file_name", file_id_to_file_name.get(file_id, "Unknown"))
             
             # Get Box client
             client = st.session_state.client
@@ -351,7 +379,7 @@ def apply_metadata():
             logger.exception(f"Unexpected error applying metadata to file {file_id}: {str(e)}")
             return {
                 "file_id": file_id,
-                "file_name": "Unknown",
+                "file_name": file_id_to_file_name.get(file_id, "Unknown"),
                 "success": False,
                 "error": f"Unexpected error: {str(e)}"
             }
@@ -396,11 +424,8 @@ def apply_metadata():
             # Update current batch in state
             st.session_state.application_state["current_batch"] = []
             for file_id in current_batch:
-                composite_key = file_id_to_composite_key.get(file_id)
-                if composite_key and composite_key in st.session_state.extraction_results:
-                    st.session_state.application_state["current_batch"].append(
-                        st.session_state.extraction_results[composite_key].get("file_name", "Unknown")
-                    )
+                file_name = file_id_to_file_name.get(file_id, "Unknown")
+                st.session_state.application_state["current_batch"].append(file_name)
             
             # Process batch in parallel
             with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
@@ -438,11 +463,7 @@ def apply_metadata():
                     
                     except Exception as e:
                         # Handle unexpected errors
-                        composite_key = file_id_to_composite_key.get(file_id)
-                        if composite_key and composite_key in st.session_state.extraction_results:
-                            file_name = st.session_state.extraction_results[composite_key].get("file_name", "Unknown")
-                        else:
-                            file_name = "Unknown"
+                        file_name = file_id_to_file_name.get(file_id, "Unknown")
                             
                         st.session_state.application_state["errors"][file_id] = {
                             "file_name": file_name,
