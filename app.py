@@ -27,25 +27,25 @@ def initialize_session_state():
     to ensure consistency across the application
     """
     # Core session state variables
-    if "authenticated" not in st.session_state:
+    if not hasattr(st.session_state, "authenticated"):
         st.session_state.authenticated = False
         logger.info("Initialized authenticated in session state")
     
-    if "client" not in st.session_state:
+    if not hasattr(st.session_state, "client"):
         st.session_state.client = None
         logger.info("Initialized client in session state")
     
-    if "current_page" not in st.session_state:
+    if not hasattr(st.session_state, "current_page"):
         st.session_state.current_page = "Home"
         logger.info("Initialized current_page in session state")
     
     # File selection and processing variables
-    if "selected_files" not in st.session_state:
+    if not hasattr(st.session_state, "selected_files"):
         st.session_state.selected_files = []
         logger.info("Initialized selected_files in session state")
     
     # Metadata configuration
-    if "metadata_config" not in st.session_state:
+    if not hasattr(st.session_state, "metadata_config"):
         st.session_state.metadata_config = {
             "extraction_method": "freeform",
             "freeform_prompt": "Extract key metadata from this document including dates, names, amounts, and other important information.",
@@ -58,7 +58,7 @@ def initialize_session_state():
         logger.info("Initialized metadata_config in session state")
     
     # Extraction results
-    if "extraction_results" not in st.session_state:
+    if not hasattr(st.session_state, "extraction_results"):
         st.session_state.extraction_results = {}
         logger.info("Initialized extraction_results in session state")
     
@@ -68,7 +68,7 @@ def initialize_session_state():
         logger.info("Initialized selected_result_ids in session state")
     
     # Application state for metadata application
-    if "application_state" not in st.session_state:
+    if not hasattr(st.session_state, "application_state"):
         st.session_state.application_state = {
             "is_applying": False,
             "applied_files": 0,
@@ -80,7 +80,7 @@ def initialize_session_state():
         logger.info("Initialized application_state in session state")
     
     # Processing state for file processing
-    if "processing_state" not in st.session_state:
+    if not hasattr(st.session_state, "processing_state"):
         st.session_state.processing_state = {
             "is_processing": False,
             "processed_files": 0,
@@ -97,17 +97,17 @@ def initialize_session_state():
         logger.info("Initialized processing_state in session state")
     
     # Debug information
-    if "debug_info" not in st.session_state:
+    if not hasattr(st.session_state, "debug_info"):
         st.session_state.debug_info = []
         logger.info("Initialized debug_info in session state")
     
     # Metadata templates
-    if "metadata_templates" not in st.session_state:
+    if not hasattr(st.session_state, "metadata_templates"):
         st.session_state.metadata_templates = {}
         logger.info("Initialized metadata_templates in session state")
     
     # Feedback data
-    if "feedback_data" not in st.session_state:
+    if not hasattr(st.session_state, "feedback_data"):
         st.session_state.feedback_data = {}
         logger.info("Initialized feedback_data in session state")
 
@@ -132,7 +132,7 @@ with st.sidebar:
     st.title("Box AI Metadata")
     
     # Show navigation only if authenticated
-    if st.session_state.authenticated:
+    if hasattr(st.session_state, "authenticated") and st.session_state.authenticated:
         st.subheader("Navigation")
         
         if st.button("Home", use_container_width=True):
@@ -168,12 +168,12 @@ with st.sidebar:
     )
 
 # Main content area
-if not st.session_state.authenticated:
+if not hasattr(st.session_state, "authenticated") or not st.session_state.authenticated:
     # Authentication page
     authenticate()
 else:
     # Display current page based on navigation
-    if st.session_state.current_page == "Home":
+    if not hasattr(st.session_state, "current_page") or st.session_state.current_page == "Home":
         st.title("Box AI Metadata Extraction")
         
         st.write("""

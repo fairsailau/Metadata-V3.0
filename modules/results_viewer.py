@@ -16,12 +16,12 @@ def view_results():
     st.title("View Results")
     
     # Validate session state
-    if not st.session_state.authenticated or not st.session_state.client:
+    if not hasattr(st.session_state, "authenticated") or not hasattr(st.session_state, "client") or not st.session_state.authenticated or not st.session_state.client:
         st.error("Please authenticate with Box first")
         return
     
-    # Ensure extraction_results is initialized
-    if "extraction_results" not in st.session_state:
+    # Ensure extraction_results is initialized - FIXED: Use hasattr check instead of 'in' operator
+    if not hasattr(st.session_state, "extraction_results"):
         st.session_state.extraction_results = {}
         logger.info("Initialized extraction_results in view_results")
     
@@ -31,7 +31,7 @@ def view_results():
         logger.info("Initialized selected_result_ids in view_results")
     
     # Ensure metadata_config is initialized
-    if "metadata_config" not in st.session_state:
+    if not hasattr(st.session_state, "metadata_config"):
         st.session_state.metadata_config = {
             "extraction_method": "freeform",
             "freeform_prompt": "Extract key metadata from this document.",
@@ -43,7 +43,7 @@ def view_results():
         }
         logger.info("Initialized metadata_config in view_results")
     
-    if not st.session_state.extraction_results:
+    if not hasattr(st.session_state, "extraction_results") or not st.session_state.extraction_results:
         st.warning("No extraction results available. Please process files first.")
         if st.button("Go to Process Files", key="go_to_process_files_btn"):
             st.session_state.current_page = "Process Files"
@@ -53,7 +53,7 @@ def view_results():
     st.write("Review and manage the metadata extraction results.")
     
     # Initialize session state for results viewer
-    if "results_filter" not in st.session_state:
+    if not hasattr(st.session_state, "results_filter"):
         st.session_state.results_filter = ""
     
     # Filter options

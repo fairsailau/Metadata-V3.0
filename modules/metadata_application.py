@@ -23,8 +23,8 @@ def apply_metadata():
         st.error("Please authenticate with Box first")
         return
     
-    # Ensure extraction_results is initialized
-    if "extraction_results" not in st.session_state:
+    # Ensure extraction_results is initialized - FIXED: Use hasattr check instead of 'in' operator
+    if not hasattr(st.session_state, "extraction_results"):
         st.session_state.extraction_results = {}
         logger.info("Initialized extraction_results in apply_metadata")
     
@@ -33,16 +33,16 @@ def apply_metadata():
         # Initialize with empty list first to avoid KeyError
         st.session_state.selected_result_ids = []
         # Then populate with extraction_results keys if available
-        if st.session_state.extraction_results:
+        if hasattr(st.session_state, "extraction_results") and st.session_state.extraction_results:
             st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
         logger.info(f"Initialized selected_result_ids in apply_metadata with {len(st.session_state.selected_result_ids)} items")
     
     # Ensure application_state is initialized
-    if "application_state" not in st.session_state:
+    if not hasattr(st.session_state, "application_state"):
         st.session_state.application_state = {
             "is_applying": False,
             "applied_files": 0,
-            "total_files": len(st.session_state.selected_result_ids),
+            "total_files": len(st.session_state.selected_result_ids) if hasattr(st.session_state, "selected_result_ids") else 0,
             "current_batch": [],
             "results": {},
             "errors": {}
@@ -50,7 +50,7 @@ def apply_metadata():
         logger.info("Initialized application_state in apply_metadata")
     
     # Ensure metadata_config is initialized
-    if "metadata_config" not in st.session_state:
+    if not hasattr(st.session_state, "metadata_config"):
         st.session_state.metadata_config = {
             "extraction_method": "freeform",
             "freeform_prompt": "Extract key metadata from this document.",
@@ -62,7 +62,7 @@ def apply_metadata():
         }
         logger.info("Initialized metadata_config in apply_metadata")
     
-    if not st.session_state.extraction_results:
+    if not hasattr(st.session_state, "extraction_results") or not st.session_state.extraction_results:
         st.warning("No extraction results available. Please process files first.")
         if st.button("Go to Process Files", key="go_to_process_files_btn"):
             st.session_state.current_page = "Process Files"
@@ -70,7 +70,7 @@ def apply_metadata():
         return
     
     # If no results are explicitly selected, use all available results
-    if not st.session_state.selected_result_ids:
+    if not hasattr(st.session_state, "selected_result_ids") or not st.session_state.selected_result_ids:
         logger.info("No results explicitly selected, using all available results")
         st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
         st.info("No results explicitly selected, using all available results")
@@ -78,7 +78,8 @@ def apply_metadata():
     st.write("Apply extracted metadata to your Box files.")
     
     # Update total files count in case selected_result_ids has changed
-    st.session_state.application_state["total_files"] = len(st.session_state.selected_result_ids)
+    if hasattr(st.session_state, "application_state"):
+        st.session_state.application_state["total_files"] = len(st.session_state.selected_result_ids)
     
     # Display selected files
     st.subheader("Selected Files")
@@ -176,6 +177,11 @@ def apply_metadata():
     # Apply metadata to a single file using Box's recommended approach
     def apply_metadata_to_file(file_id):
         try:
+            # FIXED: Ensure extraction_results exists before accessing it
+            if not hasattr(st.session_state, "extraction_results"):
+                st.session_state.extraction_results = {}
+                logger.info("Initialized extraction_results in apply_metadata_to_file")
+                
             # Validate file_id exists in extraction_results
             if file_id not in st.session_state.extraction_results:
                 logger.warning(f"File ID {file_id} not found in extraction_results")
@@ -339,14 +345,18 @@ def apply_metadata():
             logger.exception(f"Unexpected error applying metadata to file {file_id}: {str(e)}")
             return {
                 "file_id": file_id,
-                "file_name": st.session_state.extraction_results.get(file_id, {}).get("file_name", "Unknown"),
+                "file_name": st.session_state.extraction_results.get(file_id, {}).get("file_name", "Unknown") if hasattr(st.session_state, "extraction_results") else "Unknown",
                 "success": False,
                 "error": f"Unexpected error: {str(e)}"
             }
     
     # Apply metadata with batch processing
     def apply_metadata_batch():
-        # FIXED: Ensure selected_result_ids exists before accessing it
+        # FIXED: Ensure session state variables exist before accessing them
+        if not hasattr(st.session_state, "extraction_results"):
+            st.session_state.extraction_results = {}
+            logger.info("Initialized extraction_results in apply_metadata_batch")
+            
         if not hasattr(st.session_state, "selected_result_ids"):
             st.session_state.selected_result_ids = list(st.session_state.extraction_results.keys())
             logger.info(f"Initialized selected_result_ids in apply_metadata_batch with {len(st.session_state.selected_result_ids)} items")
@@ -361,7 +371,8 @@ def apply_metadata():
                 
         if not valid_file_ids:
             logger.error("No valid file IDs found in selected_result_ids")
-            st.session_state.application_state["is_applying"] = False
+            if hasattr(st.session_state, "application_state"):
+                st.session_state.application_state["is_applying"] = False
             st.error("No valid files selected for metadata application")
             return
             
@@ -369,6 +380,9 @@ def apply_metadata():
         logger.info(f"Starting metadata application for {total_files} files")
         
         # Reset application state
+        if not hasattr(st.session_state, "application_state"):
+            st.session_state.application_state = {}
+            
         st.session_state.application_state = {
             "is_applying": True,
             "applied_files": 0,
@@ -380,7 +394,7 @@ def apply_metadata():
         
         # Process files in batches
         for i in range(0, total_files, batch_size):
-            if not st.session_state.application_state["is_applying"]:
+            if not hasattr(st.session_state, "application_state") or not st.session_state.application_state["is_applying"]:
                 # Application was cancelled
                 logger.info("Metadata application cancelled")
                 break
@@ -404,7 +418,7 @@ def apply_metadata():
                 
                 # Process results as they complete
                 for future in concurrent.futures.as_completed(future_to_file):
-                    if not st.session_state.application_state["is_applying"]:
+                    if not hasattr(st.session_state, "application_state") or not st.session_state.application_state["is_applying"]:
                         # Application was cancelled
                         executor.shutdown(wait=False)
                         break
@@ -433,8 +447,13 @@ def apply_metadata():
                     
                     except Exception as e:
                         # Handle unexpected errors
+                        if hasattr(st.session_state, "extraction_results"):
+                            file_name = st.session_state.extraction_results.get(file_id, {}).get("file_name", "Unknown")
+                        else:
+                            file_name = "Unknown"
+                            
                         st.session_state.application_state["errors"][file_id] = {
-                            "file_name": st.session_state.extraction_results.get(file_id, {}).get("file_name", "Unknown"),
+                            "file_name": file_name,
                             "file_id": file_id,
                             "error": f"Unexpected error: {str(e)}"
                         }
@@ -443,8 +462,9 @@ def apply_metadata():
                         st.session_state.application_state["applied_files"] += 1
         
         # Application complete
-        st.session_state.application_state["is_applying"] = False
-        st.session_state.application_state["current_batch"] = []
+        if hasattr(st.session_state, "application_state"):
+            st.session_state.application_state["is_applying"] = False
+            st.session_state.application_state["current_batch"] = []
     
     # Handle apply button click
     if apply_button:
@@ -454,12 +474,13 @@ def apply_metadata():
     
     # Handle cancel button click
     if cancel_button:
-        st.session_state.application_state["is_applying"] = False
+        if hasattr(st.session_state, "application_state"):
+            st.session_state.application_state["is_applying"] = False
         st.warning("Metadata application cancelled.")
     
     # Display progress
     with progress_container:
-        if st.session_state.application_state["is_applying"]:
+        if hasattr(st.session_state, "application_state") and st.session_state.application_state["is_applying"]:
             st.write("#### Applying Metadata")
             
             # Progress bar
@@ -475,7 +496,7 @@ def apply_metadata():
             # Stats
             st.write(f"**Progress:** {st.session_state.application_state['applied_files']} of {st.session_state.application_state['total_files']} files processed")
         
-        elif st.session_state.application_state["applied_files"] > 0:
+        elif hasattr(st.session_state, "application_state") and st.session_state.application_state["applied_files"] > 0:
             # Application complete
             st.write("#### Metadata Application Complete")
             
@@ -496,7 +517,7 @@ def apply_metadata():
                 st.session_state.application_state = {
                     "is_applying": False,
                     "applied_files": 0,
-                    "total_files": len(st.session_state.selected_result_ids),
+                    "total_files": len(st.session_state.selected_result_ids) if hasattr(st.session_state, "selected_result_ids") else 0,
                     "current_batch": [],
                     "results": {},
                     "errors": {}
