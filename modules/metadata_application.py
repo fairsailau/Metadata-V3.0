@@ -21,6 +21,24 @@ def apply_metadata():
     # Initialize session state variables if they don't exist
     initialize_session_state()
     
+    # Add debug functionality
+    if st.sidebar.checkbox("Debug Session State"):
+        st.sidebar.write("### Session State Debug")
+        st.sidebar.write("**Session State Keys:**")
+        st.sidebar.write(list(st.session_state.keys()))
+        
+        if "auth_credentials" in st.session_state:
+            st.sidebar.write("**Auth Credentials:**")
+            st.sidebar.json({k: "***" if k in ["access_token", "refresh_token", "client_secret"] else v 
+                           for k, v in st.session_state.auth_credentials.items()})
+        else:
+            st.sidebar.write("**Auth Credentials:** Not available")
+            
+        if "client" in st.session_state:
+            st.sidebar.write("**Client:** Available")
+        else:
+            st.sidebar.write("**Client:** Not available")
+    
     # CRITICAL FIX: Verify client authentication before proceeding
     if not verify_client_authentication():
         st.error("Box client authentication is required. Please authenticate first.")
@@ -222,9 +240,19 @@ def apply_metadata():
         "Batch Size",
         min_value=1,
         max_value=25,
-        value=5,
-        help="Number of files to process in parallel. Maximum is 25.",
+        value=1,  # Default to 1 for better reliability
+        help="Number of files to process in parallel. Lower values are more reliable.",
         key="batch_size_slider"
+    )
+    
+    # Timeout option
+    timeout_seconds = st.slider(
+        "Operation Timeout (seconds)",
+        min_value=10,
+        max_value=300,
+        value=60,
+        help="Maximum time to wait for each operation to complete.",
+        key="timeout_slider"
     )
     
     # Apply metadata button
@@ -458,7 +486,8 @@ def apply_metadata():
                     
                     file_id = future_to_file[future]
                     try:
-                        result = future.result()
+                        # Add timeout to prevent hanging
+                        result = future.result(timeout=timeout_seconds)
                         
                         if result["success"]:
                             # Store success result
@@ -474,6 +503,20 @@ def apply_metadata():
                                 "file_id": file_id,
                                 "error": result["error"]
                             }
+                        
+                        # Update progress
+                        st.session_state.application_state["applied_files"] += 1
+                    
+                    except concurrent.futures.TimeoutError:
+                        # Handle timeout
+                        file_name = file_id_to_file_name.get(file_id, "Unknown")
+                        logger.error(f"Timeout applying metadata to file {file_name} ({file_id})")
+                        
+                        st.session_state.application_state["errors"][file_id] = {
+                            "file_name": file_name,
+                            "file_id": file_id,
+                            "error": f"Operation timed out after {timeout_seconds} seconds"
+                        }
                         
                         # Update progress
                         st.session_state.application_state["applied_files"] += 1
@@ -503,6 +546,7 @@ def apply_metadata():
         else:
             # Start application in a separate thread
             application_thread = threading.Thread(target=apply_metadata_batch)
+            application_thread.daemon = True  # Make thread daemon so it doesn't block app shutdown
             application_thread.start()
     
     # Handle cancel button click
@@ -658,7 +702,7 @@ def verify_client_authentication():
                 
                 # Import Box SDK
                 try:
-                    from boxsdk import OAuth2, Client
+                    from boxsdk import OAuth2, Client, JWTAuth
                 except ImportError:
                     logger.error("Failed to import Box SDK")
                     return False
@@ -666,13 +710,17 @@ def verify_client_authentication():
                 # Get stored credentials
                 creds = st.session_state.auth_credentials
                 
-                if "access_token" in creds and "refresh_token" in creds and "client_id" in creds and "client_secret" in creds:
+                # Log available credential keys (without revealing sensitive data)
+                logger.info(f"Available credential keys: {list(creds.keys())}")
+                
+                # Check for OAuth2 credentials
+                if "access_token" in creds and "client_id" in creds and "client_secret" in creds:
                     # Create OAuth object
                     oauth = OAuth2(
                         client_id=creds["client_id"],
                         client_secret=creds["client_secret"],
                         access_token=creds["access_token"],
-                        refresh_token=creds["refresh_token"],
+                        refresh_token=creds.get("refresh_token"),
                         store_tokens=store_tokens
                     )
                     
@@ -688,6 +736,28 @@ def verify_client_authentication():
                     
                     logger.info(f"Successfully re-authenticated as {user.name}")
                     return True
+                
+                # Check for JWT credentials
+                elif "jwt_config" in creds:
+                    # Initialize JWT auth
+                    auth = JWTAuth.from_settings_dictionary(creds["jwt_config"])
+                    
+                    # Authenticate
+                    auth.authenticate_instance()
+                    
+                    # Create client
+                    client = Client(auth)
+                    
+                    # Verify client works by getting service account info
+                    service_account = client.user().get()
+                    
+                    # Store client in session state
+                    st.session_state.client = client
+                    st.session_state.authenticated = True
+                    
+                    logger.info(f"Successfully re-authenticated as {service_account.name} (Service Account)")
+                    return True
+                
                 else:
                     logger.warning("Incomplete credentials in auth_credentials")
                     return False
@@ -714,7 +784,7 @@ def verify_client_authentication():
         # Try to re-authenticate
         return verify_client_authentication()
 
-def store_tokens(access_token, refresh_token):
+def store_tokens(access_token, refresh_token=None):
     """
     Store Box API tokens in session state for authentication persistence.
     This function is passed to the OAuth2 object to handle token refresh.
@@ -722,14 +792,29 @@ def store_tokens(access_token, refresh_token):
     Args:
         access_token (str): The new access token
         refresh_token (str): The new refresh token
+        
+    Returns:
+        tuple: The access_token and refresh_token (required by Box SDK)
     """
+    logger.info("Storing authentication tokens in session state")
+    
     # Initialize auth_credentials if it doesn't exist
     if "auth_credentials" not in st.session_state:
         st.session_state.auth_credentials = {}
     
+    # Make sure we have client_id and client_secret from the current session
+    if hasattr(st.session_state, 'oauth') and hasattr(st.session_state.oauth, '_client_id'):
+        st.session_state.auth_credentials["client_id"] = st.session_state.oauth._client_id
+        st.session_state.auth_credentials["client_secret"] = st.session_state.oauth._client_secret
+        logger.info("Captured client_id and client_secret from OAuth object")
+    
     # Update tokens
     st.session_state.auth_credentials["access_token"] = access_token
-    st.session_state.auth_credentials["refresh_token"] = refresh_token
+    if refresh_token:
+        st.session_state.auth_credentials["refresh_token"] = refresh_token
     
-    logger.info("Updated authentication tokens in session state")
+    # Log what we've stored (without revealing sensitive data)
+    logger.info(f"Auth credentials keys stored: {list(st.session_state.auth_credentials.keys())}")
+    
+    # Must return tokens for Box SDK
     return access_token, refresh_token
