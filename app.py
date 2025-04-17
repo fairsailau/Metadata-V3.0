@@ -26,7 +26,9 @@ from modules.file_browser import file_browser
 from modules.metadata_config import metadata_config
 from modules.processing import process_files
 from modules.results_viewer import view_results
-from modules.metadata_application import apply_metadata
+#from modules.metadata_application import apply_metadata
+from modules.direct_metadata_application import apply_metadata_direct as apply_metadata
+
 
 # Centralized session state initialization
 def initialize_session_state():
