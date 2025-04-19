@@ -6,14 +6,15 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import List, Dict, Any
 import json
-
-# Import metadata extraction functions
-from modules.metadata_extraction import metadata_extraction
+import concurrent.futures
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Debug mode flag
+DEBUG_MODE = True
 
 def process_files():
     """
@@ -32,6 +33,10 @@ def process_files():
     # Add feedback data
     if "feedback_data" not in st.session_state:
         st.session_state.feedback_data = {}
+    
+    # Initialize extraction results if not exists
+    if "extraction_results" not in st.session_state:
+        st.session_state.extraction_results = {}
     
     try:
         if not st.session_state.authenticated or not st.session_state.client:
@@ -157,8 +162,8 @@ def process_files():
                     st.write(f"Using template: Template ID {st.session_state.metadata_config['template_id']}")
                 else:
                     st.write(f"Using {len(st.session_state.metadata_config['custom_fields'])} custom fields")
-                    for i, field in enumerate(st.session_state.metadata_config["custom_fields"]):
-                        st.write(f"- {field['display_name']} ({field['type']})")
+                    for i, field in enumerate(st.session_state.metadata_config['custom_fields']):
+                        st.write(f"- {field.get('display_name', field.get('name', ''))} ({field.get('type', 'string')})")
             else:
                 st.write("Freeform prompt:")
                 st.write(f"> {st.session_state.metadata_config['freeform_prompt']}")
@@ -193,450 +198,417 @@ def process_files():
         # Progress tracking
         progress_container = st.container()
         
-        # Get metadata extraction functions
-        extraction_functions = metadata_extraction()
-        
-        # Helper function to extract structured data from API response
-        def extract_structured_data_from_response(response):
-            """
-            Extract structured data from various possible response structures
-            
-            Args:
-                response (dict): API response
-                
-            Returns:
-                dict: Extracted structured data (key-value pairs)
-            """
-            structured_data = {}
-            extracted_text = ""
-            
-            # Log the response structure for debugging
-            logger.info(f"Response structure: {json.dumps(response, indent=2) if isinstance(response, dict) else str(response)}")
-            
-            if isinstance(response, dict):
-                # Check for answer field (contains structured data in JSON format)
-                if "answer" in response and isinstance(response["answer"], dict):
-                    structured_data = response["answer"]
-                    logger.info(f"Found structured data in 'answer' field: {structured_data}")
-                    return structured_data
-                
-                # Check for answer field as string (JSON string)
-                if "answer" in response and isinstance(response["answer"], str):
-                    try:
-                        answer_data = json.loads(response["answer"])
-                        if isinstance(answer_data, dict):
-                            structured_data = answer_data
-                            logger.info(f"Found structured data in 'answer' field (JSON string): {structured_data}")
-                            return structured_data
-                    except json.JSONDecodeError:
-                        logger.warning(f"Could not parse 'answer' field as JSON: {response['answer']}")
-                
-                # Check for key-value pairs directly in response
-                for key, value in response.items():
-                    if key not in ["error", "items", "response", "item_collection", "entries", "type", "id", "sequence_id"]:
-                        structured_data[key] = value
-                
-                # Check in response field
-                if "response" in response and isinstance(response["response"], dict):
-                    response_obj = response["response"]
-                    if "answer" in response_obj and isinstance(response_obj["answer"], dict):
-                        structured_data = response_obj["answer"]
-                        logger.info(f"Found structured data in 'response.answer' field: {structured_data}")
-                        return structured_data
-                
-                # Check in items array
-                if "items" in response and isinstance(response["items"], list) and len(response["items"]) > 0:
-                    item = response["items"][0]
-                    if isinstance(item, dict):
-                        if "answer" in item and isinstance(item["answer"], dict):
-                            structured_data = item["answer"]
-                            logger.info(f"Found structured data in 'items[0].answer' field: {structured_data}")
-                            return structured_data
-            
-            # If we couldn't find structured data, return empty dict
-            if not structured_data:
-                logger.warning("Could not find structured data in response")
-            
-            return structured_data
-        
-        # Process a single file
-        def process_file(file):
-            try:
-                file_id = file["id"]
-                file_name = file["name"]
-                
-                logger.info(f"Processing file: {file_name} (ID: {file_id})")
-                st.session_state.debug_info.append(f"Processing file: {file_name} (ID: {file_id})")
-                
-                # Check if we have feedback data for this file
-                feedback_key = f"{file_id}_{st.session_state.metadata_config['extraction_method']}"
-                has_feedback = feedback_key in st.session_state.feedback_data
-                
-                if has_feedback:
-                    logger.info(f"Using feedback data for file: {file_name}")
-                    st.session_state.debug_info.append(f"Using feedback data for file: {file_name}")
-                
-                # Determine extraction method
-                if st.session_state.metadata_config["extraction_method"] == "structured":
-                    # Structured extraction
-                    if st.session_state.metadata_config["use_template"]:
-                        # Template-based extraction
-                        template_id = st.session_state.metadata_config["template_id"]
-                        metadata_template = {
-                            "template_key": template_id,
-                            "scope": "enterprise",  # Default to enterprise scope
-                            "type": "metadata_template"
-                        }
-                        
-                        logger.info(f"Using template-based extraction with template ID: {template_id}")
-                        st.session_state.debug_info.append(f"Using template-based extraction with template ID: {template_id}")
-                        
-                        # Use real API call
-                        api_result = extraction_functions["extract_structured_metadata"](
-                            file_id=file_id,
-                            metadata_template=metadata_template,
-                            ai_model=st.session_state.metadata_config["ai_model"]
-                        )
-                        
-                        # Create a clean result object with the extracted data
-                        result = {}
-                        
-                        # Copy fields from API result to our result object
-                        if isinstance(api_result, dict):
-                            for key, value in api_result.items():
-                                if key not in ["error", "items", "response"]:
-                                    result[key] = value
-                        
-                        # Apply feedback if available
-                        if has_feedback:
-                            feedback = st.session_state.feedback_data[feedback_key]
-                            # Merge feedback with result, prioritizing feedback
-                            for key, value in feedback.items():
-                                result[key] = value
-                    else:
-                        # Custom fields extraction
-                        logger.info(f"Using custom fields extraction with {len(st.session_state.metadata_config['custom_fields'])} fields")
-                        st.session_state.debug_info.append(f"Using custom fields extraction with {len(st.session_state.metadata_config['custom_fields'])} fields")
-                        
-                        # Use real API call
-                        api_result = extraction_functions["extract_structured_metadata"](
-                            file_id=file_id,
-                            fields=st.session_state.metadata_config["custom_fields"],
-                            ai_model=st.session_state.metadata_config["ai_model"]
-                        )
-                        
-                        # Create a clean result object with the extracted data
-                        result = {}
-                        
-                        # Copy fields from API result to our result object
-                        if isinstance(api_result, dict):
-                            for key, value in api_result.items():
-                                if key not in ["error", "items", "response"]:
-                                    result[key] = value
-                        
-                        # Apply feedback if available
-                        if has_feedback:
-                            feedback = st.session_state.feedback_data[feedback_key]
-                            # Merge feedback with result, prioritizing feedback
-                            for key, value in feedback.items():
-                                result[key] = value
-                else:
-                    # Freeform extraction
-                    logger.info(f"Using freeform extraction with prompt: {st.session_state.metadata_config['freeform_prompt'][:30]}...")
-                    st.session_state.debug_info.append(f"Using freeform extraction with prompt: {st.session_state.metadata_config['freeform_prompt'][:30]}...")
-                    
-                    # Use real API call
-                    api_result = extraction_functions["extract_freeform_metadata"](
-                        file_id=file_id,
-                        prompt=st.session_state.metadata_config["freeform_prompt"],
-                        ai_model=st.session_state.metadata_config["ai_model"]
-                    )
-                    
-                    # Extract structured data from the API response
-                    structured_data = extract_structured_data_from_response(api_result)
-                    
-                    # Create a clean result object with the structured data
-                    result = structured_data
-                    
-                    # If no structured data was found, include the raw response for debugging
-                    if not structured_data and isinstance(api_result, dict):
-                        result["_raw_response"] = api_result
-                    
-                    # Apply feedback if available
-                    if has_feedback:
-                        feedback = st.session_state.feedback_data[feedback_key]
-                        # For freeform, we might have feedback on key-value pairs
-                        for key, value in feedback.items():
-                            result[key] = value
-                
-                # Check for errors
-                if isinstance(api_result, dict) and "error" in api_result:
-                    logger.error(f"Error processing file {file_name}: {api_result['error']}")
-                    st.session_state.debug_info.append(f"Error processing file {file_name}: {api_result['error']}")
-                    return {
-                        "file_id": file_id,
-                        "file_name": file_name,
-                        "success": False,
-                        "error": api_result["error"]
-                    }
-                
-                # Collect visualization data
-                if st.session_state.metadata_config["extraction_method"] == "structured":
-                    # For structured extraction, track field extraction success rates
-                    if "visualization_data" not in st.session_state.processing_state:
-                        st.session_state.processing_state["visualization_data"] = {"field_success": {}}
-                    
-                    for field_key, value in result.items():
-                        if field_key not in st.session_state.processing_state["visualization_data"]["field_success"]:
-                            st.session_state.processing_state["visualization_data"]["field_success"][field_key] = {"success": 0, "total": 0}
-                        
-                        st.session_state.processing_state["visualization_data"]["field_success"][field_key]["total"] += 1
-                        if value and value.strip() if isinstance(value, str) else value:
-                            st.session_state.processing_state["visualization_data"]["field_success"][field_key]["success"] += 1
-                
-                logger.info(f"Successfully processed file: {file_name}")
-                st.session_state.debug_info.append(f"Successfully processed file: {file_name}")
-                return {
-                    "file_id": file_id,
-                    "file_name": file_name,
-                    "success": True,
-                    "result": result
-                }
-            
-            except Exception as e:
-                logger.exception(f"Exception processing file {file['name']}: {str(e)}")
-                st.session_state.debug_info.append(f"Exception processing file {file['name']}: {str(e)}")
-                return {
-                    "file_id": file["id"],
-                    "file_name": file["name"],
-                    "success": False,
-                    "error": str(e)
-                }
-        
-        # Handle start button click
+        # Process files
         if start_button:
-            logger.info("Start processing button clicked")
-            st.session_state.debug_info.append("Start processing button clicked")
-            
             # Reset processing state
             st.session_state.processing_state = {
                 "is_processing": True,
                 "processed_files": 0,
                 "total_files": len(st.session_state.selected_files),
-                "current_file_index": 0,
-                "current_file": st.session_state.selected_files[0]["name"] if st.session_state.selected_files else "",
+                "current_file_index": -1,
+                "current_file": "",
                 "results": {},
                 "errors": {},
                 "retries": {},
-                "max_retries": st.session_state.processing_state.get("max_retries", 3),
-                "retry_delay": st.session_state.processing_state.get("retry_delay", 2),
-                "processing_mode": st.session_state.processing_state.get("processing_mode", "Sequential"),
+                "max_retries": max_retries,
+                "retry_delay": retry_delay,
+                "processing_mode": processing_mode,
                 "visualization_data": {}
             }
-            st.rerun()
+            
+            # Reset extraction results
+            st.session_state.extraction_results = {}
+            
+            # Get metadata extraction functions
+            extraction_functions = get_extraction_functions()
+            
+            # Process files with progress tracking
+            process_files_with_progress(
+                st.session_state.selected_files,
+                extraction_functions,
+                batch_size=batch_size,
+                processing_mode=processing_mode
+            )
         
-        # Handle cancel button click
-        if cancel_button:
-            logger.info("Cancel processing button clicked")
-            st.session_state.debug_info.append("Cancel processing button clicked")
+        # Cancel processing
+        if cancel_button and st.session_state.processing_state.get("is_processing", False):
             st.session_state.processing_state["is_processing"] = False
-            st.warning("Processing cancelled.")
+            st.warning("Processing cancelled")
         
-        # Process next file if in processing state
-        if st.session_state.processing_state["is_processing"]:
-            current_index = st.session_state.processing_state["current_file_index"]
-            
-            if current_index < len(st.session_state.selected_files):
-                # Get current file
-                current_file = st.session_state.selected_files[current_index]
-                st.session_state.processing_state["current_file"] = current_file["name"]
+        # Display processing progress
+        if st.session_state.processing_state.get("is_processing", False):
+            with progress_container:
+                # Create progress bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
                 
-                # Process the file
-                logger.info(f"Processing file {current_index + 1} of {len(st.session_state.selected_files)}: {current_file['name']}")
-                st.session_state.debug_info.append(f"Processing file {current_index + 1} of {len(st.session_state.selected_files)}: {current_file['name']}")
+                # Update progress
+                processed_files = st.session_state.processing_state["processed_files"]
+                total_files = st.session_state.processing_state["total_files"]
+                current_file = st.session_state.processing_state["current_file"]
                 
-                result = process_file(current_file)
+                # Calculate progress
+                progress = processed_files / total_files if total_files > 0 else 0
                 
-                if result["success"]:
-                    # Store success result
-                    st.session_state.processing_state["results"][result["file_id"]] = {
-                        "file_name": result["file_name"],
-                        "file_id": result["file_id"],
-                        "result": result["result"]
-                    }
+                # Update progress bar
+                progress_bar.progress(progress)
+                
+                # Update status text
+                if current_file:
+                    status_text.text(f"Processing {current_file}... ({processed_files}/{total_files})")
                 else:
-                    # Check if we should retry
-                    file_id = result["file_id"]
-                    if file_id not in st.session_state.processing_state["retries"]:
-                        st.session_state.processing_state["retries"][file_id] = 0
-                    
-                    if st.session_state.processing_state["retries"][file_id] < st.session_state.processing_state["max_retries"]:
-                        # Increment retry count
-                        st.session_state.processing_state["retries"][file_id] += 1
-                        
-                        # Log retry
-                        retry_count = st.session_state.processing_state["retries"][file_id]
-                        logger.info(f"Retrying file {result['file_name']} (Attempt {retry_count} of {st.session_state.processing_state['max_retries']})")
-                        st.session_state.debug_info.append(f"Retrying file {result['file_name']} (Attempt {retry_count} of {st.session_state.processing_state['max_retries']})")
-                        
-                        # Wait before retrying
-                        time.sleep(st.session_state.processing_state["retry_delay"])
-                        
-                        # Don't increment the index, so we'll retry this file
-                        st.rerun()
-                        return
-                    else:
-                        # Store error result after max retries
-                        st.session_state.processing_state["errors"][file_id] = {
-                            "file_name": result["file_name"],
-                            "file_id": file_id,
-                            "error": result["error"],
-                            "retries": st.session_state.processing_state["retries"][file_id]
-                        }
-                
-                # Increment processed files count
-                st.session_state.processing_state["processed_files"] += 1
-                
-                # Move to next file
-                st.session_state.processing_state["current_file_index"] += 1
-                
-                # Check if we're done
-                if st.session_state.processing_state["current_file_index"] >= len(st.session_state.selected_files):
-                    st.session_state.processing_state["is_processing"] = False
-                    logger.info("Processing complete")
-                    st.session_state.debug_info.append("Processing complete")
-                
-                # Update extraction results in session state
-                st.session_state.extraction_results = st.session_state.processing_state["results"]
-                
-                # Rerun to process next file or show results
-                st.rerun()
-            else:
-                # All files processed
-                st.session_state.processing_state["is_processing"] = False
+                    status_text.text(f"Processed {processed_files}/{total_files} files")
         
-        # Display progress
-        with progress_container:
-            if st.session_state.processing_state["is_processing"]:
-                # Display progress bar
-                progress = st.progress(st.session_state.processing_state["processed_files"] / st.session_state.processing_state["total_files"])
-                
-                # Display current file
-                st.write(f"Processing file {st.session_state.processing_state['current_file_index'] + 1} of {st.session_state.processing_state['total_files']}: {st.session_state.processing_state['current_file']}")
-            elif st.session_state.processing_state["processed_files"] > 0:
-                # Processing complete
-                st.success(f"Processing complete! Processed {st.session_state.processing_state['processed_files']} files.")
-                
-                # Display success/error counts
-                success_count = len(st.session_state.processing_state["results"])
-                error_count = len(st.session_state.processing_state["errors"])
-                
-                st.write(f"Successfully processed: {success_count} files")
-                st.write(f"Errors: {error_count} files")
-                
-                # Display processing complete message
-                st.write("Processing complete!")
-                
-                # Display results summary
-                st.subheader("Results Summary")
-                
-                # Create tabs for different views
-                tab1, tab2, tab3 = st.tabs(["Processing Complete", "View Errors", "Provide Feedback on Results"])
-                
-                with tab1:
-                    st.write(f"Successfully processed: {success_count} of {st.session_state.processing_state['total_files']} files")
-                
-                with tab2:
-                    if error_count > 0:
-                        for file_id, error_data in st.session_state.processing_state["errors"].items():
-                            with st.expander(f"{error_data['file_name']} (Retries: {error_data['retries']})"):
-                                st.write(f"**Error:** {error_data['error']}")
-                    else:
-                        st.info("No errors occurred during processing")
-                
-                with tab3:
-                    st.write("#### Provide Feedback on Results")
-                    st.write("Select a file to provide feedback on the extraction results:")
-                    
-                    if success_count > 0:
-                        # Create a selectbox for files
-                        file_options = [(file_id, data["file_name"]) for file_id, data in st.session_state.processing_state["results"].items()]
-                        selected_file_id, selected_file_name = st.selectbox(
-                            "Select File",
-                            options=file_options,
-                            format_func=lambda x: x[1],
-                            key="feedback_file_select"
-                        )
-                        
-                        if selected_file_id:
-                            # Display current extraction results
-                            st.write(f"**Current extraction results for {selected_file_name}:**")
-                            
-                            result_data = st.session_state.processing_state["results"][selected_file_id]["result"]
-                            
-                            # Create a form for feedback
-                            with st.form(key="feedback_form"):
-                                feedback_data = {}
-                                
-                                # For all extraction methods, show each field
-                                for field_key, field_value in result_data.items():
-                                    # Skip internal fields
-                                    if field_key.startswith("_"):
-                                        continue
-                                        
-                                    # Create editable fields
-                                    if isinstance(field_value, list):
-                                        # For multiSelect fields
-                                        feedback_data[field_key] = st.multiselect(
-                                            field_key,
-                                            options=field_value + ["Option 1", "Option 2", "Option 3"],
-                                            default=field_value
-                                        )
-                                    else:
-                                        # For other field types
-                                        feedback_data[field_key] = st.text_input(field_key, value=field_value)
-                                
-                                # Allow adding new key-value pairs
-                                st.write("**Add new key-value pair:**")
-                                new_key = st.text_input("Key")
-                                new_value = st.text_input("Value")
-                                
-                                if new_key and new_value:
-                                    feedback_data[new_key] = new_value
-                                
-                                # Submit button
-                                submit_button = st.form_submit_button("Submit Feedback")
-                                
-                                if submit_button:
-                                    # Store feedback
-                                    feedback_key = f"{selected_file_id}_{st.session_state.metadata_config['extraction_method']}"
-                                    st.session_state.feedback_data[feedback_key] = feedback_data
-                                    
-                                    # Update results
-                                    for field_key, field_value in feedback_data.items():
-                                        st.session_state.processing_state["results"][selected_file_id]["result"][field_key] = field_value
-                                    
-                                    # Update extraction results in session state
-                                    st.session_state.extraction_results = st.session_state.processing_state["results"]
-                                    
-                                    st.success("Feedback submitted successfully!")
-                    else:
-                        st.info("No successful extractions to provide feedback on")
-                
-                # Continue button
-                if st.button("Continue to View Results", use_container_width=True):
-                    st.session_state.current_page = "View Results"
-                    st.rerun()
-        
-        # Debug information
-        with st.expander("Debug Information"):
-            if st.button("Clear Debug Info"):
-                st.session_state.debug_info = []
-                st.rerun()
+        # Display processing results
+        if "results" in st.session_state.processing_state and st.session_state.processing_state["results"]:
+            st.write("### Processing Results")
             
-            for i, info in enumerate(reversed(st.session_state.debug_info[-50:])):
-                st.write(f"{len(st.session_state.debug_info) - i}. {info}")
+            # Display success message
+            processed_files = len(st.session_state.processing_state["results"])
+            error_files = len(st.session_state.processing_state["errors"]) if "errors" in st.session_state.processing_state else 0
+            
+            if error_files == 0:
+                st.success(f"Processing complete! Successfully processed {processed_files} files.")
+            else:
+                st.warning(f"Processing complete! Successfully processed {processed_files} files with {error_files} errors.")
+            
+            # Display errors if any
+            if "errors" in st.session_state.processing_state and st.session_state.processing_state["errors"]:
+                st.write("### Errors")
+                
+                for file_id, error in st.session_state.processing_state["errors"].items():
+                    # Find file name
+                    file_name = ""
+                    for file in st.session_state.selected_files:
+                        if file["id"] == file_id:
+                            file_name = file["name"]
+                            break
+                    
+                    st.error(f"{file_name}: {error}")
+            
+            # Continue button
+            st.write("---")
+            if st.button("Continue to View Results", key="continue_to_results_button", use_container_width=True):
+                st.session_state.current_page = "View Results"
+                st.rerun()
     
     except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
-        st.exception(e)
+        st.error(f"Error: {str(e)}")
+        logger.error(f"Error in process_files: {str(e)}")
+
+# Helper function to extract structured data from API response
+def extract_structured_data_from_response(response):
+    """
+    Extract structured data from various possible response structures
+    
+    Args:
+        response (dict): API response
+        
+    Returns:
+        dict: Extracted structured data (key-value pairs)
+    """
+    structured_data = {}
+    extracted_text = ""
+    
+    # Log the response structure for debugging
+    logger.info(f"Response structure: {json.dumps(response, indent=2) if isinstance(response, dict) else str(response)}")
+    
+    if isinstance(response, dict):
+        # Check for answer field (contains structured data in JSON format)
+        if "answer" in response and isinstance(response["answer"], dict):
+            structured_data = response["answer"]
+            logger.info(f"Found structured data in 'answer' field: {structured_data}")
+            return structured_data
+        
+        # Check for answer field as string (JSON string)
+        if "answer" in response and isinstance(response["answer"], str):
+            try:
+                answer_data = json.loads(response["answer"])
+                if isinstance(answer_data, dict):
+                    structured_data = answer_data
+                    logger.info(f"Found structured data in 'answer' field (JSON string): {structured_data}")
+                    return structured_data
+            except json.JSONDecodeError:
+                logger.warning(f"Could not parse 'answer' field as JSON: {response['answer']}")
+        
+        # Check for key-value pairs directly in response
+        for key, value in response.items():
+            if key not in ["error", "items", "response", "item_collection", "entries", "type", "id", "sequence_id"]:
+                structured_data[key] = value
+        
+        # Check in response field
+        if "response" in response and isinstance(response["response"], dict):
+            response_obj = response["response"]
+            if "answer" in response_obj and isinstance(response_obj["answer"], dict):
+                structured_data = response_obj["answer"]
+                logger.info(f"Found structured data in 'response.answer' field: {structured_data}")
+                return structured_data
+        
+        # Check in items array
+        if "items" in response and isinstance(response["items"], list) and len(response["items"]) > 0:
+            item = response["items"][0]
+            if isinstance(item, dict):
+                if "answer" in item and isinstance(item["answer"], dict):
+                    structured_data = item["answer"]
+                    logger.info(f"Found structured data in 'items[0].answer' field: {structured_data}")
+                    return structured_data
+    
+    # If we couldn't find structured data, return empty dict
+    if not structured_data:
+        logger.warning("Could not find structured data in response")
+    
+    return structured_data
+
+def process_files_with_progress(files, extraction_functions, batch_size=5, processing_mode="Sequential"):
+    """
+    Process files with progress tracking
+    
+    Args:
+        files: List of files to process
+        extraction_functions: Dictionary of extraction functions
+        batch_size: Number of files to process in parallel
+        processing_mode: Processing mode (Sequential or Parallel)
+    """
+    # Check if already processing
+    if not st.session_state.processing_state.get("is_processing", False):
+        return
+    
+    # Get total files
+    total_files = len(files)
+    st.session_state.processing_state["total_files"] = total_files
+    
+    # Process files
+    if processing_mode == "Parallel":
+        # Process files in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
+            # Submit tasks
+            future_to_file = {}
+            for file in files:
+                future = executor.submit(process_file, file, extraction_functions)
+                future_to_file[future] = file
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_file):
+                file = future_to_file[future]
+                
+                try:
+                    result = future.result()
+                    
+                    # Update processing state
+                    st.session_state.processing_state["processed_files"] += 1
+                    st.session_state.processing_state["current_file"] = ""
+                    
+                    # Store result
+                    if result["success"]:
+                        st.session_state.processing_state["results"][file["id"]] = result["data"]
+                        st.session_state.extraction_results[file["id"]] = result["data"]
+                    else:
+                        st.session_state.processing_state["errors"][file["id"]] = result["error"]
+                
+                except Exception as e:
+                    # Update processing state
+                    st.session_state.processing_state["processed_files"] += 1
+                    st.session_state.processing_state["current_file"] = ""
+                    
+                    # Store error
+                    st.session_state.processing_state["errors"][file["id"]] = str(e)
+    else:
+        # Process files sequentially
+        for i, file in enumerate(files):
+            # Check if processing was cancelled
+            if not st.session_state.processing_state.get("is_processing", False):
+                break
+            
+            # Update processing state
+            st.session_state.processing_state["current_file_index"] = i
+            st.session_state.processing_state["current_file"] = file["name"]
+            
+            try:
+                # Process file
+                result = process_file(file, extraction_functions)
+                
+                # Update processing state
+                st.session_state.processing_state["processed_files"] += 1
+                
+                # Store result
+                if result["success"]:
+                    st.session_state.processing_state["results"][file["id"]] = result["data"]
+                    st.session_state.extraction_results[file["id"]] = result["data"]
+                else:
+                    st.session_state.processing_state["errors"][file["id"]] = result["error"]
+            
+            except Exception as e:
+                # Update processing state
+                st.session_state.processing_state["processed_files"] += 1
+                
+                # Store error
+                st.session_state.processing_state["errors"][file["id"]] = str(e)
+    
+    # Mark processing as complete
+    st.session_state.processing_state["is_processing"] = False
+    st.session_state.processing_state["current_file"] = ""
+    
+    # Rerun to update UI
+    st.rerun()
+
+def process_file(file, extraction_functions):
+    """
+    Process a single file
+    
+    Args:
+        file: File to process
+        extraction_functions: Dictionary of extraction functions
+        
+    Returns:
+        dict: Processing result
+    """
+    try:
+        file_id = file["id"]
+        file_name = file["name"]
+        
+        logger.info(f"Processing file: {file_name} (ID: {file_id})")
+        
+        # Check if we have feedback data for this file
+        feedback_key = f"{file_id}_{st.session_state.metadata_config['extraction_method']}"
+        has_feedback = feedback_key in st.session_state.feedback_data
+        
+        if has_feedback:
+            logger.info(f"Using feedback data for file: {file_name}")
+        
+        # Determine extraction method
+        if st.session_state.metadata_config["extraction_method"] == "structured":
+            # Structured extraction
+            if st.session_state.metadata_config["use_template"]:
+                # Template-based extraction
+                template_id = st.session_state.metadata_config["template_id"]
+                metadata_template = {
+                    "templateKey": template_id.split("_")[1] if "_" in template_id else template_id,
+                    "scope": template_id.split("_")[0] if "_" in template_id else "enterprise",
+                    "type": "metadata_template"
+                }
+                
+                logger.info(f"Using template-based extraction with template ID: {template_id}")
+                
+                # Use real API call
+                api_result = extraction_functions["extract_structured_metadata"](
+                    file_id=file_id,
+                    metadata_template=metadata_template,
+                    ai_model=st.session_state.metadata_config["ai_model"]
+                )
+                
+                # Create a clean result object with the extracted data
+                result = {}
+                
+                # Copy fields from API result to our result object
+                if isinstance(api_result, dict):
+                    for key, value in api_result.items():
+                        if key not in ["error", "items", "response"]:
+                            result[key] = value
+                
+                # Apply feedback if available
+                if has_feedback:
+                    feedback = st.session_state.feedback_data[feedback_key]
+                    # Merge feedback with result, prioritizing feedback
+                    for key, value in feedback.items():
+                        result[key] = value
+            else:
+                # Custom fields extraction
+                logger.info(f"Using custom fields extraction with {len(st.session_state.metadata_config['custom_fields'])} fields")
+                
+                # Use real API call
+                api_result = extraction_functions["extract_structured_metadata"](
+                    file_id=file_id,
+                    fields=st.session_state.metadata_config["custom_fields"],
+                    ai_model=st.session_state.metadata_config["ai_model"]
+                )
+                
+                # Create a clean result object with the extracted data
+                result = {}
+                
+                # Copy fields from API result to our result object
+                if isinstance(api_result, dict):
+                    for key, value in api_result.items():
+                        if key not in ["error", "items", "response"]:
+                            result[key] = value
+                
+                # Apply feedback if available
+                if has_feedback:
+                    feedback = st.session_state.feedback_data[feedback_key]
+                    # Merge feedback with result, prioritizing feedback
+                    for key, value in feedback.items():
+                        result[key] = value
+        else:
+            # Freeform extraction
+            logger.info(f"Using freeform extraction with prompt: {st.session_state.metadata_config['freeform_prompt'][:30]}...")
+            
+            # Use real API call
+            api_result = extraction_functions["extract_freeform_metadata"](
+                file_id=file_id,
+                prompt=st.session_state.metadata_config["freeform_prompt"],
+                ai_model=st.session_state.metadata_config["ai_model"]
+            )
+            
+            # Extract structured data from the API response
+            structured_data = extract_structured_data_from_response(api_result)
+            
+            # Create a clean result object with the structured data
+            result = structured_data
+            
+            # If no structured data was found, include the raw response for debugging
+            if not structured_data and isinstance(api_result, dict):
+                result["_raw_response"] = api_result
+            
+            # Apply feedback if available
+            if has_feedback:
+                feedback = st.session_state.feedback_data[feedback_key]
+                # For freeform, we might have feedback on key-value pairs
+                for key, value in feedback.items():
+                    result[key] = value
+        
+        # Check for errors
+        if isinstance(api_result, dict) and "error" in api_result:
+            logger.error(f"Error processing file {file_name}: {api_result['error']}")
+            return {
+                "success": False,
+                "error": api_result["error"]
+            }
+        
+        logger.info(f"Successfully processed file: {file_name}")
+        return {
+            "success": True,
+            "data": result
+        }
+    
+    except Exception as e:
+        # Log error
+        logger.error(f"Error processing file {file['name']} ({file['id']}): {str(e)}")
+        
+        # Return error
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+def get_extraction_functions():
+    """
+    Get extraction functions based on configuration
+    
+    Returns:
+        dict: Dictionary of extraction functions
+    """
+    try:
+        # Import metadata extraction function
+        from modules.metadata_extraction import metadata_extraction
+        
+        # Get extraction functions
+        extraction_functions = metadata_extraction()
+        
+        # Return functions
+        return extraction_functions
+    except ImportError as e:
+        logger.error(f"Error importing extraction functions: {str(e)}")
+        st.error(f"Error importing extraction functions: {str(e)}")
+        return {
+            "extract_freeform_metadata": lambda file_id, **kwargs: {"error": "Extraction function not available"},
+            "extract_structured_metadata": lambda file_id, **kwargs: {"error": "Extraction function not available"}
+        }
