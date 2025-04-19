@@ -10,8 +10,6 @@ st.set_page_config(
 import os
 import sys
 import logging
-import time
-from datetime import datetime
 from pathlib import Path
 
 # Configure logging
@@ -28,9 +26,8 @@ from modules.file_browser import file_browser
 from modules.metadata_config import metadata_config
 from modules.processing import process_files
 from modules.results_viewer import view_results
+#from modules.metadata_application import apply_metadata
 from modules.direct_metadata_application_enhanced import apply_metadata_direct as apply_metadata
-from modules.document_categorization import document_categorization
-from modules.metadata_template_retrieval import get_metadata_templates, initialize_template_state
 
 
 # Centralized session state initialization
@@ -123,25 +120,6 @@ def initialize_session_state():
     if not hasattr(st.session_state, "feedback_data"):
         st.session_state.feedback_data = {}
         logger.info("Initialized feedback_data in session state")
-    
-    # Initialize document categorization state
-    if not hasattr(st.session_state, "document_categorization"):
-        st.session_state.document_categorization = {
-            "is_categorized": False,
-            "categorized_files": 0,
-            "total_files": 0,
-            "results": {},  # file_id -> categorization result
-            "errors": {},   # file_id -> error message
-            "processing_state": {
-                "is_processing": False,
-                "current_file_index": -1,
-                "current_file": ""
-            }
-        }
-        logger.info("Initialized document_categorization in session state")
-    
-    # Initialize template state
-    initialize_template_state()
 
 # Initialize session state
 initialize_session_state()
@@ -159,49 +137,26 @@ with st.sidebar:
     if hasattr(st.session_state, "authenticated") and st.session_state.authenticated:
         st.subheader("Navigation")
         
-        if st.button("Home", use_container_width=True, key="nav_home"):
+        if st.button("Home", use_container_width=True):
             navigate_to("Home")
         
-        if st.button("File Browser", use_container_width=True, key="nav_file_browser"):
+        if st.button("File Browser", use_container_width=True):
             navigate_to("File Browser")
-        
-        if st.button("Document Categorization", use_container_width=True, key="nav_doc_cat"):
-            navigate_to("Document Categorization")
             
-        if st.button("Metadata Configuration", use_container_width=True, key="nav_meta_config"):
+        if st.button("Metadata Configuration", use_container_width=True):
             navigate_to("Metadata Configuration")
             
-        if st.button("Process Files", use_container_width=True, key="nav_process"):
+        if st.button("Process Files", use_container_width=True):
             navigate_to("Process Files")
             
-        if st.button("View Results", use_container_width=True, key="nav_view"):
+        if st.button("View Results", use_container_width=True):
             navigate_to("View Results")
             
-        if st.button("Apply Metadata", use_container_width=True, key="nav_apply"):
+        if st.button("Apply Metadata", use_container_width=True):
             navigate_to("Apply Metadata")
         
-        # Metadata Templates section
-        st.subheader("Metadata Templates")
-        
-        # Display template count
-        template_count = len(st.session_state.metadata_templates) if hasattr(st.session_state, "metadata_templates") else 0
-        st.write(f"{template_count} templates loaded")
-        
-        # Display last update time
-        if hasattr(st.session_state, "template_cache_timestamp") and st.session_state.template_cache_timestamp:
-            cache_time = datetime.fromtimestamp(st.session_state.template_cache_timestamp)
-            st.write(f"Last updated: {cache_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Refresh templates button
-        if st.button("Refresh Templates", key="refresh_templates_btn"):
-            with st.spinner("Refreshing metadata templates..."):
-                templates = get_metadata_templates(st.session_state.client, force_refresh=True)
-                st.session_state.template_cache_timestamp = time.time()
-                st.success(f"Retrieved {len(templates)} metadata templates")
-                st.rerun()
-        
         # Logout button
-        if st.button("Logout", use_container_width=True, key="nav_logout"):
+        if st.button("Logout", use_container_width=True):
             st.session_state.authenticated = False
             st.session_state.client = None
             navigate_to("Home")
@@ -219,14 +174,6 @@ if not hasattr(st.session_state, "authenticated") or not st.session_state.authen
     # Authentication page
     authenticate()
 else:
-    # Retrieve metadata templates if authenticated and not already cached
-    if st.session_state.authenticated and st.session_state.client:
-        if not st.session_state.metadata_templates:
-            with st.spinner("Retrieving metadata templates..."):
-                templates = get_metadata_templates(st.session_state.client)
-                st.session_state.template_cache_timestamp = time.time()
-                logger.info(f"Retrieved {len(templates)} metadata templates")
-    
     # Display current page based on navigation
     if not hasattr(st.session_state, "current_page") or st.session_state.current_page == "Home":
         st.title("Box AI Metadata Extraction")
@@ -238,11 +185,10 @@ else:
         and apply it at scale. Follow these steps to get started:
         
         1. Use the **File Browser** to select files for processing
-        2. Use **Document Categorization** to categorize your documents using Box AI
-        3. Configure metadata extraction parameters in **Metadata Configuration**
-        4. Process your files in the **Process Files** section
-        5. Review the results in the **View Results** section
-        6. Apply the extracted metadata in the **Apply Metadata** section
+        2. Configure metadata extraction parameters in **Metadata Configuration**
+        3. Process your files in the **Process Files** section
+        4. Review the results in the **View Results** section
+        5. Apply the extracted metadata in the **Apply Metadata** section
         """)
         
         # Quick actions
@@ -250,25 +196,22 @@ else:
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            if st.button("Browse Files", use_container_width=True, key="quick_browse"):
+            if st.button("Browse Files", use_container_width=True):
                 navigate_to("File Browser")
                 st.rerun()
         
         with col2:
-            if st.button("Categorize Documents", use_container_width=True, key="quick_categorize"):
-                navigate_to("Document Categorization")
+            if st.button("Configure Metadata", use_container_width=True):
+                navigate_to("Metadata Configuration")
                 st.rerun()
         
         with col3:
-            if st.button("Configure Metadata", use_container_width=True, key="quick_configure"):
-                navigate_to("Metadata Configuration")
+            if st.button("View Results", use_container_width=True):
+                navigate_to("View Results")
                 st.rerun()
     
     elif st.session_state.current_page == "File Browser":
         file_browser()
-    
-    elif st.session_state.current_page == "Document Categorization":
-        document_categorization()
     
     elif st.session_state.current_page == "Metadata Configuration":
         metadata_config()

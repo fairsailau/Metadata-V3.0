@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def view_results():
     """
-    View and manage extraction results - COMPLETELY REDESIGNED TO AVOID NESTED EXPANDERS
+    View and manage extraction results
     """
     st.title("View Results")
     
@@ -20,12 +20,12 @@ def view_results():
         st.error("Please authenticate with Box first")
         return
     
-    # Ensure extraction_results is initialized
+    # Ensure extraction_results is initialized - FIXED: Use hasattr check instead of 'in' operator
     if not hasattr(st.session_state, "extraction_results"):
         st.session_state.extraction_results = {}
         logger.info("Initialized extraction_results in view_results")
     
-    # Ensure selected_result_ids is initialized
+    # Ensure selected_result_ids is initialized - FIXED: Use hasattr check instead of 'in' operator
     if not hasattr(st.session_state, "selected_result_ids"):
         st.session_state.selected_result_ids = []
         logger.info("Initialized selected_result_ids in view_results")
@@ -67,98 +67,11 @@ def view_results():
     # Get filtered results
     filtered_results = {}
     
-    # Process extraction_results to prepare for display
-    for file_id, result in st.session_state.extraction_results.items():
-        # Create a standardized result structure
-        processed_result = {
-            "file_id": file_id,
-            "file_name": "Unknown"
-        }
-        
-        # Try to find file name
-        for file in st.session_state.selected_files:
-            if file["id"] == file_id:
-                processed_result["file_name"] = file["name"]
-                break
-        
-        # Process the result data based on its structure
-        if isinstance(result, dict):
-            # Store the original result
-            processed_result["original_data"] = result
-            
-            # Check if this is a direct API response with an answer field
-            if "answer" in result:
-                answer = result["answer"]
-                
-                # Check if answer is a JSON string that needs parsing
-                if isinstance(answer, str):
-                    try:
-                        parsed_answer = json.loads(answer)
-                        if isinstance(parsed_answer, dict):
-                            processed_result["result_data"] = parsed_answer
-                        else:
-                            processed_result["result_data"] = {"extracted_text": answer}
-                    except json.JSONDecodeError:
-                        # Not valid JSON, treat as text
-                        processed_result["result_data"] = {"extracted_text": answer}
-                elif isinstance(answer, dict):
-                    # Already a dictionary
-                    processed_result["result_data"] = answer
-                else:
-                    # Some other format, store as is
-                    processed_result["result_data"] = {"extracted_text": str(answer)}
-            
-            # Check for items array with answer field (common in Box AI responses)
-            elif "items" in result and isinstance(result["items"], list) and len(result["items"]) > 0:
-                item = result["items"][0]
-                if isinstance(item, dict) and "answer" in item:
-                    answer = item["answer"]
-                    
-                    # Check if answer is a JSON string that needs parsing
-                    if isinstance(answer, str):
-                        try:
-                            parsed_answer = json.loads(answer)
-                            if isinstance(parsed_answer, dict):
-                                processed_result["result_data"] = parsed_answer
-                            else:
-                                processed_result["result_data"] = {"extracted_text": answer}
-                        except json.JSONDecodeError:
-                            # Not valid JSON, treat as text
-                            processed_result["result_data"] = {"extracted_text": answer}
-                    elif isinstance(answer, dict):
-                        # Already a dictionary
-                        processed_result["result_data"] = answer
-                    else:
-                        # Some other format, store as is
-                        processed_result["result_data"] = {"extracted_text": str(answer)}
-            
-            # If no structured data found, check for other fields that might contain data
-            if "result_data" not in processed_result:
-                # Look for any fields that might contain extracted data
-                for key in ["extracted_data", "data", "result", "metadata"]:
-                    if key in result and result[key]:
-                        if isinstance(result[key], dict):
-                            processed_result["result_data"] = result[key]
-                            break
-                        elif isinstance(result[key], str):
-                            try:
-                                parsed_data = json.loads(result[key])
-                                if isinstance(parsed_data, dict):
-                                    processed_result["result_data"] = parsed_data
-                                    break
-                            except json.JSONDecodeError:
-                                processed_result["result_data"] = {"extracted_text": result[key]}
-                                break
-                
-                # If still no result_data, use the entire result as is
-                if "result_data" not in processed_result:
-                    processed_result["result_data"] = result
-        else:
-            # Not a dictionary, store as text
-            processed_result["result_data"] = {"extracted_text": str(result)}
-        
-        # Add to filtered results
-        filtered_results[file_id] = processed_result
+    # Convert extraction_results to use file_id as the key for compatibility
+    for key, result in st.session_state.extraction_results.items():
+        file_id = result.get("file_id")
+        if file_id:
+            filtered_results[file_id] = result
     
     # Apply filter if specified
     if st.session_state.results_filter:
@@ -190,12 +103,12 @@ def view_results():
             # Extract and add metadata to the table
             extracted_text = ""
             
-            # Get the result data
+            # Check for result_data field
             if "result_data" in result_data and result_data["result_data"]:
                 if isinstance(result_data["result_data"], dict):
                     # For structured data, add key fields to the table
                     for key, value in result_data["result_data"].items():
-                        if not key.startswith("_") and key != "extracted_text":  # Skip internal fields
+                        if not key.startswith("_"):  # Skip internal fields
                             row[key] = str(value) if not isinstance(value, list) else ", ".join(str(v) for v in value)
                             # Limit to first 5 fields to keep table manageable
                             if len(row) > 7:  # File Name, File ID + 5 fields
@@ -206,6 +119,43 @@ def view_results():
                 elif isinstance(result_data["result_data"], str):
                     # If result_data is a string, use it directly
                     extracted_text = result_data["result_data"]
+            
+            # Check for result field (backward compatibility)
+            elif "result" in result_data and result_data["result"]:
+                if isinstance(result_data["result"], dict):
+                    # For structured data, add key fields to the table
+                    for key, value in result_data["result"].items():
+                        if not key.startswith("_") and key != "extracted_text":  # Skip internal fields
+                            row[key] = str(value) if not isinstance(value, list) else ", ".join(str(v) for v in value)
+                            # Limit to first 5 fields to keep table manageable
+                            if len(row) > 7:  # File Name, File ID + 5 fields
+                                break
+                    
+                    # Create a summary for the Extracted Text column
+                    extracted_text = ", ".join([f"{k}: {v}" for k, v in list(result_data["result"].items())[:3]])
+                elif isinstance(result_data["result"], str):
+                    # If result is a string, use it directly
+                    extracted_text = result_data["result"]
+            
+            # Check for api_response field
+            elif "api_response" in result_data and result_data["api_response"]:
+                api_response = result_data["api_response"]
+                if isinstance(api_response, dict):
+                    if "answer" in api_response:
+                        if isinstance(api_response["answer"], dict):
+                            # Extract fields from answer
+                            for key, value in api_response["answer"].items():
+                                if not key.startswith("_"):  # Skip internal fields
+                                    row[key] = str(value) if not isinstance(value, list) else ", ".join(str(v) for v in value)
+                                    # Limit to first 5 fields to keep table manageable
+                                    if len(row) > 7:  # File Name, File ID + 5 fields
+                                        break
+                            
+                            # Create a summary for the Extracted Text column
+                            extracted_text = ", ".join([f"{k}: {v}" for k, v in list(api_response["answer"].items())[:3]])
+                        elif isinstance(api_response["answer"], str):
+                            # If answer is a string, use it directly
+                            extracted_text = api_response["answer"]
             
             # Add extracted text to row if not already added
             if "Extracted Text" not in row and extracted_text:
@@ -243,63 +193,69 @@ def view_results():
             st.info("No results match the current filter")
     
     with tab2:
-        # COMPLETELY REDESIGNED DETAILED VIEW TO AVOID NESTED EXPANDERS
-        # Instead of using expanders for each file, use a selectbox to choose which file to view
-        file_options = [(file_id, result_data.get("file_name", "Unknown")) 
-                        for file_id, result_data in filtered_results.items()]
-        
-        if not file_options:
-            st.info("No results match the current filter")
-        else:
-            # Add a "Select a file" option at the beginning
-            file_options = [("", "Select a file...")] + file_options
-            
-            # Create a selectbox for file selection
-            selected_file_id_name = st.selectbox(
-                "Select a file to view details",
-                options=file_options,
-                format_func=lambda x: x[1],  # Display the file name
-                key="file_selector"
-            )
-            
-            # Get the selected file ID
-            selected_file_id = selected_file_id_name[0] if selected_file_id_name[0] else None
-            
-            # Display file details if a file is selected
-            if selected_file_id and selected_file_id in filtered_results:
-                result_data = filtered_results[selected_file_id]
-                
+        # Detailed view
+        for file_id, result_data in filtered_results.items():
+            with st.expander(f"{result_data.get('file_name', 'Unknown')} ({file_id})", expanded=True):
                 # Display file info
-                st.write("### File Information")
                 st.write(f"**File:** {result_data.get('file_name', 'Unknown')}")
-                st.write(f"**File ID:** {selected_file_id}")
+                st.write(f"**File ID:** {file_id}")
                 
                 # Display extraction results
-                st.write("### Extracted Metadata")
+                st.write("#### Extracted Metadata")
+                
+                # Display the raw JSON for debugging
+                st.write("##### Raw Result Data (Debug View)")
+                st.json(result_data)
                 
                 # Extract and display metadata
                 extracted_data = {}
                 
-                # Get the result data
+                # Check for result_data field
                 if "result_data" in result_data and result_data["result_data"]:
                     if isinstance(result_data["result_data"], dict):
                         # Extract key-value pairs from the result
                         for key, value in result_data["result_data"].items():
+                            if not key.startswith("_"):  # Skip internal fields
+                                extracted_data[key] = value
+                    elif isinstance(result_data["result_data"], str):
+                        # If result_data is a string, display it as extracted text
+                        st.write("##### Extracted Text")
+                        st.write(result_data["result_data"])
+                
+                # Check for result field (backward compatibility)
+                elif "result" in result_data and result_data["result"]:
+                    if isinstance(result_data["result"], dict):
+                        # Extract key-value pairs from the result
+                        for key, value in result_data["result"].items():
                             if not key.startswith("_") and key != "extracted_text":  # Skip internal fields
                                 extracted_data[key] = value
                         
                         # Check for extracted_text field
-                        if "extracted_text" in result_data["result_data"]:
-                            st.write("#### Extracted Text")
-                            st.write(result_data["result_data"]["extracted_text"])
-                    elif isinstance(result_data["result_data"], str):
-                        # If result_data is a string, display it as extracted text
-                        st.write("#### Extracted Text")
-                        st.write(result_data["result_data"])
+                        if "extracted_text" in result_data["result"]:
+                            st.write("##### Extracted Text")
+                            st.write(result_data["result"]["extracted_text"])
+                    elif isinstance(result_data["result"], str):
+                        # If result is a string, display it as extracted text
+                        st.write("##### Extracted Text")
+                        st.write(result_data["result"])
+                
+                # Check for api_response field
+                elif "api_response" in result_data and result_data["api_response"]:
+                    api_response = result_data["api_response"]
+                    if isinstance(api_response, dict) and "answer" in api_response:
+                        if isinstance(api_response["answer"], dict):
+                            # Extract fields from answer
+                            for key, value in api_response["answer"].items():
+                                if not key.startswith("_"):  # Skip internal fields
+                                    extracted_data[key] = value
+                        elif isinstance(api_response["answer"], str):
+                            # If answer is a string, display it as extracted text
+                            st.write("##### Extracted Text")
+                            st.write(api_response["answer"])
                 
                 # Display extracted data as editable fields
                 if extracted_data:
-                    st.write("#### Key-Value Pairs")
+                    st.write("##### Key-Value Pairs")
                     for key, value in extracted_data.items():
                         # Create editable fields
                         if isinstance(value, list):
@@ -308,89 +264,75 @@ def view_results():
                                 key,
                                 options=value + ["Option 1", "Option 2", "Option 3"],
                                 default=value,
-                                key=f"edit_{selected_file_id}_{key}"
+                                key=f"edit_{file_id}_{key}"
                             )
                         else:
                             # For other field types
-                            new_value = st.text_input(key, value=str(value), key=f"edit_{selected_file_id}_{key}")
+                            new_value = st.text_input(key, value=str(value), key=f"edit_{file_id}_{key}")
                         
                         # Update value if changed
                         if new_value != value:
-                            # Find the original result in extraction_results
-                            if selected_file_id in st.session_state.extraction_results:
-                                # Get the original result
-                                original_result = st.session_state.extraction_results[selected_file_id]
-                                
-                                # Check if original result has answer field
-                                if isinstance(original_result, dict) and "answer" in original_result:
-                                    # Check if answer is a JSON string
-                                    if isinstance(original_result["answer"], str):
-                                        try:
-                                            # Parse the JSON string
-                                            parsed_answer = json.loads(original_result["answer"])
-                                            if isinstance(parsed_answer, dict):
-                                                # Update the value
-                                                parsed_answer[key] = new_value
-                                                # Convert back to JSON string
-                                                original_result["answer"] = json.dumps(parsed_answer)
-                                        except json.JSONDecodeError:
-                                            # Not valid JSON, can't update
-                                            pass
-                                    elif isinstance(original_result["answer"], dict):
-                                        # Update the value directly
-                                        original_result["answer"][key] = new_value
-                                
-                                # Also update the processed result for display
-                                if "result_data" in result_data and isinstance(result_data["result_data"], dict):
-                                    result_data["result_data"][key] = new_value
+                            # Find the original key in extraction_results
+                            for orig_key, orig_result in st.session_state.extraction_results.items():
+                                if orig_result.get("file_id") == file_id:
+                                    # Update in result_data if it exists
+                                    if "result_data" in orig_result and isinstance(orig_result["result_data"], dict):
+                                        st.session_state.extraction_results[orig_key]["result_data"][key] = new_value
+                                    # Update in result if it exists (backward compatibility)
+                                    elif "result" in orig_result and isinstance(orig_result["result"], dict):
+                                        st.session_state.extraction_results[orig_key]["result"][key] = new_value
+                                    break
                 else:
                     st.write("No structured data extracted")
                 
-                # CRITICAL FIX: Instead of using an expander for raw data, use a checkbox to toggle display
-                st.write("### Raw Result Data (Debug View)")
-                show_raw_data = st.checkbox("Show raw data", key=f"show_raw_{selected_file_id}")
-                
-                if show_raw_data:
-                    if "original_data" in result_data:
-                        st.json(result_data["original_data"])
+                # Check for key_value_pairs in result
+                if "result" in result_data and isinstance(result_data["result"], dict) and "key_value_pairs" in result_data["result"]:
+                    kv_pairs = result_data["result"]["key_value_pairs"]
+                    if kv_pairs:
+                        st.write("##### Key-Value Pairs (Legacy Format)")
+                        for key, value in kv_pairs.items():
+                            new_value = st.text_input(key, value=value, key=f"edit_kv_{file_id}_{key}")
+                            
+                            # Update value if changed
+                            if new_value != value:
+                                # Find the original key in extraction_results
+                                for orig_key, orig_result in st.session_state.extraction_results.items():
+                                    if orig_result.get("file_id") == file_id:
+                                        st.session_state.extraction_results[orig_key]["result"]["key_value_pairs"][key] = new_value
+                                        break
                     else:
-                        st.json(result_data)
+                        st.write("No key-value pairs extracted")
                 
                 # Selection checkbox for batch operations
-                st.write("### Batch Operations")
-                selected = st.checkbox(
-                    "Select for batch operations", 
-                    value=selected_file_id in st.session_state.selected_result_ids,
-                    key=f"select_{selected_file_id}"
-                )
-                
-                if selected and selected_file_id not in st.session_state.selected_result_ids:
-                    st.session_state.selected_result_ids.append(selected_file_id)
-                elif not selected and selected_file_id in st.session_state.selected_result_ids:
-                    st.session_state.selected_result_ids.remove(selected_file_id)
+                is_selected = file_id in st.session_state.selected_result_ids
+                if st.checkbox("Select for batch operations", value=is_selected, key=f"select_{file_id}"):
+                    if file_id not in st.session_state.selected_result_ids:
+                        st.session_state.selected_result_ids.append(file_id)
+                else:
+                    if file_id in st.session_state.selected_result_ids:
+                        st.session_state.selected_result_ids.remove(file_id)
     
     # Batch operations
     st.subheader("Batch Operations")
     
-    # Select/deselect all buttons
     col1, col2 = st.columns(2)
+    
     with col1:
-        if st.button("Select All", use_container_width=True):
+        if st.button("Select All", use_container_width=True, key="select_all_btn"):
             st.session_state.selected_result_ids = list(filtered_results.keys())
             st.rerun()
     
     with col2:
-        if st.button("Deselect All", use_container_width=True):
+        if st.button("Deselect All", use_container_width=True, key="deselect_all_btn"):
             st.session_state.selected_result_ids = []
             st.rerun()
     
-    # Display selected count
+    # Display selection count
     st.write(f"Selected {len(st.session_state.selected_result_ids)} of {len(filtered_results)} results")
     
-    # Apply metadata button
-    if st.button("Apply Metadata", use_container_width=True):
-        if st.session_state.selected_result_ids:
-            st.session_state.current_page = "Apply Metadata"
-            st.rerun()
-        else:
-            st.warning("Please select at least one result to apply metadata")
+    # Apply Metadata button
+    if st.button("Apply Metadata", use_container_width=True, key="apply_metadata_btn", disabled=not st.session_state.selected_result_ids):
+        # Save selected_result_ids before navigation
+        logger.info(f"Saving {len(st.session_state.selected_result_ids)} selected result IDs before navigation")
+        st.session_state.current_page = "Apply Metadata"
+        st.rerun()

@@ -1,21 +1,24 @@
 import streamlit as st
-import logging
+import os
 import json
 import requests
-from typing import Dict, Any, List, Optional
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, 
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from boxsdk import BoxAPIException
 
 def metadata_extraction():
     """
     Implement metadata extraction using Box AI API
-    
-    Returns:
-        dict: Dictionary of extraction functions
     """
+    st.title("Box AI Metadata Extraction")
+    
+    if not st.session_state.authenticated or not st.session_state.client:
+        st.error("Please authenticate with Box first")
+        return
+    
+    st.write("""
+    This module implements the actual Box AI API calls for metadata extraction.
+    It will be used by the processing module to extract metadata from files.
+    """)
+    
     # Structured metadata extraction
     def extract_structured_metadata(file_id, fields=None, metadata_template=None, ai_model="azure__openai__gpt_4o_mini"):
         """
@@ -31,25 +34,6 @@ def metadata_extraction():
             dict: Extracted metadata
         """
         try:
-            # Get client from session state
-            client = st.session_state.client
-            
-            # Get access token from client
-            access_token = None
-            if hasattr(client, '_oauth'):
-                access_token = client._oauth.access_token
-            elif hasattr(client, 'auth') and hasattr(client.auth, 'access_token'):
-                access_token = client.auth.access_token
-            
-            if not access_token:
-                raise ValueError("Could not retrieve access token from client")
-            
-            # Set headers
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Content-Type': 'application/json'
-            }
-            
             # Create AI agent configuration
             ai_agent = {
                 "type": "ai_agent_extract",
@@ -64,66 +48,111 @@ def metadata_extraction():
             # Create items array with file ID
             items = [{"id": file_id, "type": "file"}]
             
-            # Construct API URL for Box AI Extract Structured
-            api_url = "https://api.box.com/2.0/ai/extract_structured"
+            # Get client from session state
+            client = st.session_state.client
             
-            # Construct request body
-            request_body = {
-                "items": items,
-                "ai_agent": ai_agent
-            }
-            
-            # Add template or fields
-            if metadata_template:
-                request_body["metadata_template"] = metadata_template
-            elif fields:
-                # Convert fields to Box API format if needed
+            # Prepare request based on whether we're using fields or template
+            if fields:
+                # Convert fields to Box API format
                 api_fields = []
                 for field in fields:
-                    if "key" in field:
-                        # Field is already in Box API format
-                        api_fields.append(field)
-                    else:
-                        # Convert field to Box API format
-                        api_field = {
-                            "key": field.get("name", ""),
-                            "display_name": field.get("display_name", field.get("name", "")),
-                            "type": field.get("type", "string")
-                        }
-                        
-                        # Add description and prompt if available
-                        if "description" in field:
-                            api_field["description"] = field["description"]
-                        if "prompt" in field:
-                            api_field["prompt"] = field["prompt"]
-                        
-                        # Add options for enum fields
-                        if field.get("type") == "enum" and "options" in field:
-                            api_field["options"] = field["options"]
-                        
-                        api_fields.append(api_field)
+                    api_field = {
+                        "key": field["key"],
+                        "display_name": field["display_name"],
+                        "description": field["description"],
+                        "prompt": field["prompt"],
+                        "type": field["type"]
+                    }
+                    
+                    # Add options for multiSelect fields
+                    if field["type"] == "multiSelect" and field["options"]:
+                        api_field["options"] = field["options"]
+                    
+                    api_fields.append(api_field)
                 
-                request_body["fields"] = api_fields
+                try:
+                    # Try to make API call with fields using client.ai
+                    if hasattr(client, 'ai') and hasattr(client.ai, 'create_ai_extract_structured'):
+                        result = client.ai.create_ai_extract_structured(
+                            items=items,
+                            fields=api_fields,
+                            ai_agent=ai_agent
+                        )
+                    else:
+                        # Fallback to direct API call if client.ai is not available
+                        result = make_direct_api_call(
+                            client=client,
+                            endpoint="ai/extract_structured",
+                            data={
+                                "items": items,
+                                "fields": api_fields,
+                                "ai_agent": ai_agent
+                            }
+                        )
+                except AttributeError as e:
+                    # Handle the specific attribute error for base_api_url
+                    if "'Client' object has no attribute 'base_api_url'" in str(e):
+                        result = make_direct_api_call(
+                            client=client,
+                            endpoint="ai/extract_structured",
+                            data={
+                                "items": items,
+                                "fields": api_fields,
+                                "ai_agent": ai_agent
+                            }
+                        )
+                    else:
+                        # Re-raise if it's a different attribute error
+                        raise e
+            
+            elif metadata_template:
+                try:
+                    # Try to make API call with metadata template using client.ai
+                    if hasattr(client, 'ai') and hasattr(client.ai, 'create_ai_extract_structured'):
+                        result = client.ai.create_ai_extract_structured(
+                            items=items,
+                            metadata_template=metadata_template,
+                            ai_agent=ai_agent
+                        )
+                    else:
+                        # Fallback to direct API call if client.ai is not available
+                        result = make_direct_api_call(
+                            client=client,
+                            endpoint="ai/extract_structured",
+                            data={
+                                "items": items,
+                                "metadata_template": metadata_template,
+                                "ai_agent": ai_agent
+                            }
+                        )
+                except AttributeError as e:
+                    # Handle the specific attribute error for base_api_url
+                    if "'Client' object has no attribute 'base_api_url'" in str(e):
+                        result = make_direct_api_call(
+                            client=client,
+                            endpoint="ai/extract_structured",
+                            data={
+                                "items": items,
+                                "metadata_template": metadata_template,
+                                "ai_agent": ai_agent
+                            }
+                        )
+                    else:
+                        # Re-raise if it's a different attribute error
+                        raise e
+            
             else:
                 raise ValueError("Either fields or metadata_template must be provided")
             
-            # Make API call
-            logger.info(f"Making Box AI API call for structured extraction with request: {json.dumps(request_body)}")
-            response = requests.post(api_url, headers=headers, json=request_body)
-            
-            # Check response
-            if response.status_code != 200:
-                logger.error(f"Box AI API error response: {response.text}")
-                return {"error": f"Error in Box AI API call: {response.status_code} {response.reason}"}
-            
-            # Parse response
-            response_data = response.json()
-            
-            # Return the response data
-            return response_data
+            # Process and return results
+            return result
+        
+        except BoxAPIException as e:
+            st.error(f"Box API Error: {str(e)}")
+            return {"error": str(e)}
         
         except Exception as e:
-            logger.error(f"Error in Box AI API call: {str(e)}")
+            st.error(f"Error: {str(e)}")
             return {"error": str(e)}
     
     # Freeform metadata extraction
@@ -140,25 +169,6 @@ def metadata_extraction():
             dict: Extracted metadata
         """
         try:
-            # Get client from session state
-            client = st.session_state.client
-            
-            # Get access token from client
-            access_token = None
-            if hasattr(client, '_oauth'):
-                access_token = client._oauth.access_token
-            elif hasattr(client, 'auth') and hasattr(client.auth, 'access_token'):
-                access_token = client.auth.access_token
-            
-            if not access_token:
-                raise ValueError("Could not retrieve access token from client")
-            
-            # Set headers
-            headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Content-Type': 'application/json'
-            }
-            
             # Create AI agent configuration
             ai_agent = {
                 "type": "ai_agent_extract",
@@ -173,33 +183,99 @@ def metadata_extraction():
             # Create items array with file ID
             items = [{"id": file_id, "type": "file"}]
             
-            # Construct API URL for Box AI Extract
-            api_url = "https://api.box.com/2.0/ai/extract"
+            # Get client from session state
+            client = st.session_state.client
             
-            # Construct request body
-            request_body = {
-                "items": items,
-                "prompt": prompt,
-                "ai_agent": ai_agent
+            try:
+                # Try to make API call using client.ai
+                if hasattr(client, 'ai') and hasattr(client.ai, 'create_ai_extract'):
+                    result = client.ai.create_ai_extract(
+                        items=items,
+                        prompt=prompt,
+                        ai_agent=ai_agent
+                    )
+                else:
+                    # Fallback to direct API call if client.ai is not available
+                    result = make_direct_api_call(
+                        client=client,
+                        endpoint="ai/extract",
+                        data={
+                            "items": items,
+                            "prompt": prompt,
+                            "ai_agent": ai_agent
+                        }
+                    )
+            except AttributeError as e:
+                # Handle the specific attribute error for base_api_url
+                if "'Client' object has no attribute 'base_api_url'" in str(e):
+                    result = make_direct_api_call(
+                        client=client,
+                        endpoint="ai/extract",
+                        data={
+                            "items": items,
+                            "prompt": prompt,
+                            "ai_agent": ai_agent
+                        }
+                    )
+                else:
+                    # Re-raise if it's a different attribute error
+                    raise e
+            
+            # Process and return results
+            return result
+        
+        except BoxAPIException as e:
+            st.error(f"Box API Error: {str(e)}")
+            return {"error": str(e)}
+        
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
+            return {"error": str(e)}
+    
+    # Helper function to make direct API calls to Box API
+    def make_direct_api_call(client, endpoint, data):
+        """
+        Make a direct API call to Box API
+        
+        Args:
+            client: Box client object
+            endpoint (str): API endpoint (without base URL)
+            data (dict): Request data
+            
+        Returns:
+            dict: API response
+        """
+        try:
+            # Get access token from client
+            access_token = None
+            if hasattr(client, '_oauth'):
+                access_token = client._oauth.access_token
+            elif hasattr(client, 'auth') and hasattr(client.auth, 'access_token'):
+                access_token = client.auth.access_token
+            
+            if not access_token:
+                raise ValueError("Could not retrieve access token from client")
+            
+            # Construct API URL
+            api_url = f"https://api.box.com/2.0/{endpoint}"
+            
+            # Set headers
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
             }
             
             # Make API call
-            logger.info(f"Making Box AI API call for freeform extraction with request: {json.dumps(request_body)}")
-            response = requests.post(api_url, headers=headers, json=request_body)
+            response = requests.post(api_url, headers=headers, json=data)
             
-            # Check response
-            if response.status_code != 200:
-                logger.error(f"Box AI API error response: {response.text}")
-                return {"error": f"Error in Box AI API call: {response.status_code} {response.reason}"}
+            # Check for errors
+            response.raise_for_status()
             
-            # Parse response
-            response_data = response.json()
-            
-            # Return the response data
-            return response_data
+            # Return response as JSON
+            return response.json()
         
-        except Exception as e:
-            logger.error(f"Error in Box AI API call: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            st.error(f"API Request Error: {str(e)}")
             return {"error": str(e)}
     
     # Return the extraction functions for use in other modules
@@ -207,72 +283,3 @@ def metadata_extraction():
         "extract_structured_metadata": extract_structured_metadata,
         "extract_freeform_metadata": extract_freeform_metadata
     }
-
-# For backward compatibility
-def extract_metadata_freeform(client, file_id, prompt=None, ai_model="azure__openai__gpt_4o_mini"):
-    """
-    Backward compatibility wrapper for extract_freeform_metadata
-    """
-    # Get extraction functions
-    extraction_functions = metadata_extraction()
-    
-    # Call the actual function
-    return extraction_functions["extract_freeform_metadata"](
-        file_id=file_id,
-        prompt=prompt or "Extract key metadata from this document including dates, names, amounts, and other important information.",
-        ai_model=ai_model
-    )
-
-def extract_metadata_structured(client, file_id, template_id=None, custom_fields=None, ai_model="azure__openai__gpt_4o_mini"):
-    """
-    Backward compatibility wrapper for extract_structured_metadata
-    """
-    # Get extraction functions
-    extraction_functions = metadata_extraction()
-    
-    # Prepare parameters
-    if template_id:
-        # Get template details
-        template = get_template_by_id(template_id)
-        if template:
-            # Create metadata template reference
-            metadata_template = {
-                "templateKey": template["key"],
-                "scope": template_id.split("_")[0]  # Extract scope from template_id
-            }
-        else:
-            raise ValueError(f"Template with ID {template_id} not found")
-        
-        # Call the actual function with template
-        return extraction_functions["extract_structured_metadata"](
-            file_id=file_id,
-            metadata_template=metadata_template,
-            ai_model=ai_model
-        )
-    elif custom_fields:
-        # Call the actual function with fields
-        return extraction_functions["extract_structured_metadata"](
-            file_id=file_id,
-            fields=custom_fields,
-            ai_model=ai_model
-        )
-    else:
-        raise ValueError("Either template_id or custom_fields must be provided")
-
-def get_template_by_id(template_id):
-    """
-    Get template by ID from session state
-    
-    Args:
-        template_id: Template ID
-        
-    Returns:
-        dict: Template or None if not found
-    """
-    if not template_id:
-        return None
-    
-    if not hasattr(st.session_state, "metadata_templates") or not st.session_state.metadata_templates:
-        return None
-    
-    return st.session_state.metadata_templates.get(template_id)
